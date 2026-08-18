@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-test
+state
+sftp_password.txt
+test
+.github
+*.md

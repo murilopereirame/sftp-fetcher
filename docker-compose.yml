@@ -1,0 +1,65 @@
+services:
+  sftp-fetcher:
+    build: .
+    container_name: sftp-fetcher
+    restart: unless-stopped
+
+    # Use the same UID and GID as the Radarr container.
+    # Radarr must be able to move and delete the files that this service writes.
+    user: "1000:1000"
+
+    environment:
+      # --- The SFTP server on the seedbox ---
+      SFTP_HOST: "10.9.0.11"
+      SFTP_PORT: "22"
+      SFTP_USER: "torrent"
+      SFTP_PASSWORD_FILE: "/run/secrets/sftp_password"
+      REMOTE_DIR: "/uploads"
+
+      # --- The qBittorrent Web API on the seedbox ---
+      QBIT_URL: "http://10.9.0.11:8080"
+      # QBIT_AUTH: apikey | password | none
+      #   apikey    the qBittorrent API key (needs version 5.2.0 or later).
+      #             Make one here: Options > Web UI > API keys > Generate.
+      #   password  the user and the password (older versions).
+      #   none      qBittorrent whitelists this IP. No credentials.
+      QBIT_AUTH: "apikey"
+      QBIT_API_KEY: "qbt_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # For the "password" mode only:
+      # QBIT_USER: "admin"
+      # QBIT_PASS: "adminadmin"
+
+      # --- The three paths. They all show the same data. ---
+      # 1. The prefix that qBittorrent reports in "content_path".
+      QBIT_ROOT: "/downloads"
+      # 2. The folder in THIS container.
+      LOCAL_ROOT: "/downloads"
+      # (3. The folder in the RADARR container is the "Local Path" of the
+      #     Radarr remote path mapping. See the notes.)
+
+      POLL_INTERVAL: "60"
+      MAX_WAIT_HOURS: "48"
+      COPY_TRIES: "3"
+      COPY_WAIT: "60"
+
+    volumes:
+      # The same host folder that Radarr mounts as its download folder.
+      # Host:      /mnt/MEDIA/downloads
+      # Radarr:    /data/downloads   <- the "Local Path" in the mapping
+      # This one:  /downloads
+      - /mnt/MEDIA/downloads:/downloads
+      - ./state:/state
+
+    secrets:
+      - sftp_password
+
+    networks:
+      - media
+
+networks:
+  media:
+    external: true
+
+secrets:
+  sftp_password:
+    file: ./sftp_password.txt
