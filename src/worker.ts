@@ -15,7 +15,7 @@ import path from "node:path";
 import { config } from "./config.js";
 import { errorText, log, short } from "./log.js";
 import { mapPaths } from "./paths.js";
-import { line, setProgress, type Progress } from "./progress.js";
+import { getProgress, line, setProgress, type Progress } from "./progress.js";
 import { QBittorrent } from "./qbittorrent.js";
 import { download } from "./sftp.js";
 import type { Job, Store } from "./store.js";
@@ -66,6 +66,12 @@ export class Worker {
       const ageHours = (Date.now() - job.addedAt) / 3_600_000;
       if (ageHours > config.timing.maxWaitHours) {
         log(`${short(job.hash)}: The time limit is over. The job stops.`);
+        await this.store.record({
+          hash: job.hash,
+          title: job.title,
+          status: "expired",
+          at: Date.now(),
+        });
         await this.store.remove(job.hash);
         continue;
       }
@@ -140,12 +146,25 @@ export class Worker {
     const paths = mapPaths(torrent);
     if (paths === null) {
       log(`${short(job.hash)}: ERROR. The path '${torrent.content_path}' is not usable.`);
+      await this.store.record({
+        hash: job.hash,
+        title: job.title,
+        status: "failed",
+        at: Date.now(),
+      });
       await this.store.remove(job.hash);
       return;
     }
 
     if (await exists(paths.local)) {
       log(`${short(job.hash)}: The local path is already there. Nothing to do.`);
+      await this.store.record({
+        hash: job.hash,
+        title: job.title,
+        status: "downloaded",
+        at: Date.now(),
+        path: paths.relative,
+      });
       await this.store.markDone(job.hash);
       return;
     }
@@ -180,10 +199,14 @@ export class Worker {
       }
     }
 
+    // Read the byte count before the progress is cleared. The history keeps it.
+    const finalBytes = getProgress()?.bytesTotal;
     setProgress(null);
 
     if (downloaded === null) {
       await rm(temporary, { recursive: true, force: true });
+      // The next pass tries again, so this is not a final failure. The line is
+      // in the Events feed already. The history stays clean until the job ends.
       log(`${short(job.hash)}: ERROR. The download failed. The next pass tries again.`);
       return;
     }
@@ -194,6 +217,14 @@ export class Worker {
     await rm(temporary, { recursive: true, force: true });
 
     log(`${short(job.hash)}: Ready at '${paths.local}'. Radarr can import it now.`);
+    await this.store.record({
+      hash: job.hash,
+      title: job.title,
+      status: "downloaded",
+      at: Date.now(),
+      path: paths.relative,
+      ...(finalBytes === undefined ? {} : { bytes: finalBytes }),
+    });
     await this.store.markDone(job.hash);
   }
 }

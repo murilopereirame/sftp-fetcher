@@ -90,3 +90,50 @@ test("the status endpoint shows the queue", async () => {
   assert.ok(Array.isArray(body.queue));
   assert.equal(body.download, null);
 });
+
+test("the root path serves the web panel", async () => {
+  const response = await fetch(`${base}/`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+  const text = await response.text();
+  assert.match(text, /<title>sftp-fetcher<\/title>/);
+});
+
+test("the api status endpoint has raw numbers and counts", async () => {
+  const response = await fetch(`${base}/api/status`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    queue: unknown[];
+    download: unknown;
+    counts: { queue: number; history: number };
+  };
+  assert.ok(Array.isArray(body.queue));
+  assert.equal(typeof body.counts.queue, "number");
+  assert.equal(typeof body.counts.history, "number");
+});
+
+test("the api history endpoint returns an array", async () => {
+  const response = await fetch(`${base}/api/history`);
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(await response.json()));
+});
+
+test("the api files endpoint returns the root and a file list", async () => {
+  const response = await fetch(`${base}/api/files`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { root: string; files: unknown[] };
+  assert.equal(typeof body.root, "string");
+  assert.ok(Array.isArray(body.files));
+});
+
+test("the api activity endpoint returns an array", async () => {
+  const response = await fetch(`${base}/api/activity`);
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(await response.json()));
+});
+
+test("the health check still answers on its own path", async () => {
+  const response = await fetch(`${base}/health`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "healthy");
+});

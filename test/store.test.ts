@@ -39,3 +39,29 @@ test("remove takes the job out without the done mark", async () => {
   assert.equal(store.jobs().some((job) => job.hash === "dddd"), false);
   assert.equal(store.knows("dddd"), false);
 });
+
+test("the history keeps events and returns the newest first", async () => {
+  const store = new Store();
+  await store.load();
+
+  await store.record({ hash: "eeee", title: "Film E", status: "grabbed", at: 1 });
+  await store.record({
+    hash: "eeee",
+    title: "Film E",
+    status: "downloaded",
+    at: 2,
+    path: "movies/Film.E",
+    bytes: 1024,
+  });
+
+  const list = store.history();
+  assert.equal(list[0]?.status, "downloaded");
+  assert.equal(list[0]?.bytes, 1024);
+  assert.equal(list[1]?.status, "grabbed");
+
+  // A new object reads the same file. The history survives a restart.
+  const second = new Store();
+  await second.load();
+  assert.equal(second.history().length, list.length);
+  assert.equal(second.history()[0]?.path, "movies/Film.E");
+});

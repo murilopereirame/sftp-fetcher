@@ -9,7 +9,10 @@
  */
 import http from "node:http";
 import { config } from "./config.js";
+import { activity } from "./events.js";
+import { listFiles } from "./files.js";
 import { errorText, log, short } from "./log.js";
+import { panelHtml } from "./panel.js";
 import { bytes, duration, getProgress, percent } from "./progress.js";
 import type { Store } from "./store.js";
 
@@ -78,6 +81,42 @@ function status(store: Store): unknown {
   };
 }
 
+/**
+ * The answer of GET /api/status. The web panel reads it every few seconds.
+ * The numbers are raw here. The page makes them pretty in the browser.
+ */
+function apiStatus(store: Store): unknown {
+  const progress = getProgress();
+
+  return {
+    queue: store.jobs().map((job) => ({
+      hash: job.hash,
+      title: job.title,
+      waitingSince: new Date(job.addedAt).toISOString(),
+    })),
+    download:
+      progress === null
+        ? null
+        : {
+            hash: progress.hash,
+            title: progress.title,
+            name: progress.name,
+            percent: percent(progress),
+            bytesDone: progress.bytesDone,
+            bytesTotal: progress.bytesTotal,
+            speed: progress.speed,
+            eta: progress.eta,
+            filesDone: progress.filesDone,
+            filesTotal: progress.filesTotal,
+            runningFor: (Date.now() - progress.startedAt) / 1000,
+          },
+    counts: {
+      queue: store.jobs().length,
+      history: store.history().length,
+    },
+  };
+}
+
 export function createServer(store: Store): http.Server {
   return http.createServer((request, response) => {
     void handle(request, response, store).catch((error: unknown) => {
@@ -95,12 +134,33 @@ async function handle(
   const target = (request.url ?? "").split("?")[0]?.replace(/\/+$/, "") ?? "";
 
   if (request.method === "GET") {
+    if (target === "" || target === "/panel") {
+      reply(response, 200, panelHtml, "text/html; charset=utf-8");
+      return;
+    }
+    if (target === "/health") {
+      reply(response, 200, "healthy");
+      return;
+    }
     if (target === "/status") {
       reply(response, 200, JSON.stringify(status(store), null, 2), "application/json");
       return;
     }
-    if (target === "/health" || target === "") {
-      reply(response, 200, "healthy");
+    if (target === "/api/status") {
+      reply(response, 200, JSON.stringify(apiStatus(store), null, 2), "application/json");
+      return;
+    }
+    if (target === "/api/history") {
+      reply(response, 200, JSON.stringify(store.history(), null, 2), "application/json");
+      return;
+    }
+    if (target === "/api/files") {
+      const files = await listFiles();
+      reply(response, 200, JSON.stringify({ root: config.localRoot, files }, null, 2), "application/json");
+      return;
+    }
+    if (target === "/api/activity") {
+      reply(response, 200, JSON.stringify(activity(), null, 2), "application/json");
       return;
     }
     reply(response, 404, "not found");
@@ -145,7 +205,9 @@ async function handle(
   if (store.knows(hash)) {
     log(`${short(hash)}: This torrent is in the queue or done already.`);
   } else {
-    await store.add({ hash, title, addedAt: Date.now() });
+    const now = Date.now();
+    await store.add({ hash, title, addedAt: now });
+    await store.record({ hash, title, status: "grabbed", at: now });
     log(`${short(hash)}: Added to the queue. Title: '${title}'.`);
   }
 
