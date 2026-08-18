@@ -71,6 +71,14 @@ pass. There is no linter in this project.
 - **The download must be atomic.** The data goes into
   `LOCAL_ROOT/.incomplete/<infohash>/` first. The move into place is one
   rename. If Radarr sees a part file, it imports a broken film.
+- **The download resumes, so the part files must survive.** `.incomplete/` is
+  not wiped on a failed try, a later pass, or a restart. `src/sftp.ts` reads
+  each remote file from its local size (an SFTP `start` offset) and appends.
+  That needs a sequential copy: a whole local file is then always a correct
+  prefix of the remote file. Do not switch back to `fastGet`. It is faster but
+  writes chunks in parallel and can leave holes, so its part file is not a
+  prefix and cannot resume. Only a job that ends (done or expired or a bad
+  path) clears its `.incomplete/` folder.
 - **qBittorrent 5.2.0 added API keys.** The header is
   `Authorization: Bearer qbt_...`. There is no login call and no cookie in that
   mode. The `password` mode is for older versions only.

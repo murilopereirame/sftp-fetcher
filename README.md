@@ -50,6 +50,12 @@ sequenceDiagram
 The download goes into `.incomplete/<infohash>/` first. The move into place is
 one filesystem operation, so Radarr never sees a part file.
 
+The download resumes. If the link drops, the part files stay in
+`.incomplete/`, and the next try reads each remote file from the byte it
+reached (an SFTP offset) and appends the rest. Nothing already copied is lost.
+This holds across a retry, a later pass, and a container restart, because
+`.incomplete/` is on the download volume.
+
 The data on the seedbox is never deleted. Seeding continues.
 
 ## Requirements
@@ -293,5 +299,7 @@ docker pull ghcr.io/<owner>/<repository>:latest
   started. Older downloads need the `curl` command above.
 - One download runs at a time. A second grab waits. This protects a slow link.
 - The queue is in `state/queue.json`. A restart does not lose a job.
+- A dropped download resumes from where it stopped, even after a restart. The
+  part files wait in `.incomplete/` on the download volume.
 - The container user must have the same UID and GID as Radarr. If not, Radarr
   cannot move the files after the import.

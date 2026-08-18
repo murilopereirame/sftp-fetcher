@@ -32,6 +32,11 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
+/** The temporary folder for one job. The part files wait here between tries. */
+function incompleteDir(hash: string): string {
+  return path.join(config.localRoot, ".incomplete", hash);
+}
+
 export class Worker {
   private running = false;
 
@@ -72,6 +77,8 @@ export class Worker {
           status: "expired",
           at: Date.now(),
         });
+        // The job ends here, so the part files are not needed. Remove them.
+        await rm(incompleteDir(job.hash), { recursive: true, force: true });
         await this.store.remove(job.hash);
         continue;
       }
@@ -152,6 +159,7 @@ export class Worker {
         status: "failed",
         at: Date.now(),
       });
+      await rm(incompleteDir(job.hash), { recursive: true, force: true });
       await this.store.remove(job.hash);
       return;
     }
@@ -171,8 +179,12 @@ export class Worker {
 
     // The download goes into a temporary folder first.
     // Radarr then never sees an incomplete file.
-    const temporary = path.join(config.localRoot, ".incomplete", job.hash);
-    await rm(temporary, { recursive: true, force: true });
+    //
+    // The folder is NOT wiped here. A part file from a stopped copy stays, and
+    // the download resumes it from the byte it reached. This survives a retry,
+    // a later pass, and a container restart, because the folder is on the
+    // download volume.
+    const temporary = incompleteDir(job.hash);
     await mkdir(temporary, { recursive: true });
 
     log(`${short(job.hash)}: Download start: '${paths.relative}'.`);
@@ -187,12 +199,11 @@ export class Worker {
         );
         break;
       } catch (error) {
+        // Keep the part files. The next try resumes from where this one got to.
         log(
           `${short(job.hash)}: The download failed. Attempt ${attempt}. ` +
             `${errorText(error)}`,
         );
-        await rm(temporary, { recursive: true, force: true });
-        await mkdir(temporary, { recursive: true });
         if (attempt < config.timing.copyTries) {
           await sleep(config.timing.copyWaitSeconds);
         }
@@ -204,10 +215,10 @@ export class Worker {
     setProgress(null);
 
     if (downloaded === null) {
-      await rm(temporary, { recursive: true, force: true });
-      // The next pass tries again, so this is not a final failure. The line is
-      // in the Events feed already. The history stays clean until the job ends.
-      log(`${short(job.hash)}: ERROR. The download failed. The next pass tries again.`);
+      // The part files stay in the temporary folder. The next pass resumes
+      // them. The line is in the Events feed already, so the history stays
+      // clean until the job ends.
+      log(`${short(job.hash)}: The download stopped. The next pass resumes it.`);
       return;
     }
 
