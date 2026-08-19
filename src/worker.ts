@@ -15,7 +15,7 @@ import path from "node:path";
 import { config } from "./config.js";
 import { errorText, log, short } from "./log.js";
 import { mapPaths } from "./paths.js";
-import { line, setProgress, type Progress } from "./progress.js";
+import { getProgress, line, setProgress, type Progress } from "./progress.js";
 import { QBittorrent } from "./qbittorrent.js";
 import { download } from "./sftp.js";
 import type { Job, Store } from "./store.js";
@@ -30,6 +30,11 @@ async function exists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The temporary folder for one job. The part files wait here between tries. */
+function incompleteDir(hash: string): string {
+  return path.join(config.localRoot, ".incomplete", hash);
 }
 
 export class Worker {
@@ -66,6 +71,14 @@ export class Worker {
       const ageHours = (Date.now() - job.addedAt) / 3_600_000;
       if (ageHours > config.timing.maxWaitHours) {
         log(`${short(job.hash)}: The time limit is over. The job stops.`);
+        await this.store.record({
+          hash: job.hash,
+          title: job.title,
+          status: "expired",
+          at: Date.now(),
+        });
+        // The job ends here, so the part files are not needed. Remove them.
+        await rm(incompleteDir(job.hash), { recursive: true, force: true });
         await this.store.remove(job.hash);
         continue;
       }
@@ -140,20 +153,38 @@ export class Worker {
     const paths = mapPaths(torrent);
     if (paths === null) {
       log(`${short(job.hash)}: ERROR. The path '${torrent.content_path}' is not usable.`);
+      await this.store.record({
+        hash: job.hash,
+        title: job.title,
+        status: "failed",
+        at: Date.now(),
+      });
+      await rm(incompleteDir(job.hash), { recursive: true, force: true });
       await this.store.remove(job.hash);
       return;
     }
 
     if (await exists(paths.local)) {
       log(`${short(job.hash)}: The local path is already there. Nothing to do.`);
+      await this.store.record({
+        hash: job.hash,
+        title: job.title,
+        status: "downloaded",
+        at: Date.now(),
+        path: paths.relative,
+      });
       await this.store.markDone(job.hash);
       return;
     }
 
     // The download goes into a temporary folder first.
     // Radarr then never sees an incomplete file.
-    const temporary = path.join(config.localRoot, ".incomplete", job.hash);
-    await rm(temporary, { recursive: true, force: true });
+    //
+    // The folder is NOT wiped here. A part file from a stopped copy stays, and
+    // the download resumes it from the byte it reached. This survives a retry,
+    // a later pass, and a container restart, because the folder is on the
+    // download volume.
+    const temporary = incompleteDir(job.hash);
     await mkdir(temporary, { recursive: true });
 
     log(`${short(job.hash)}: Download start: '${paths.relative}'.`);
@@ -168,23 +199,26 @@ export class Worker {
         );
         break;
       } catch (error) {
+        // Keep the part files. The next try resumes from where this one got to.
         log(
           `${short(job.hash)}: The download failed. Attempt ${attempt}. ` +
             `${errorText(error)}`,
         );
-        await rm(temporary, { recursive: true, force: true });
-        await mkdir(temporary, { recursive: true });
         if (attempt < config.timing.copyTries) {
           await sleep(config.timing.copyWaitSeconds);
         }
       }
     }
 
+    // Read the byte count before the progress is cleared. The history keeps it.
+    const finalBytes = getProgress()?.bytesTotal;
     setProgress(null);
 
     if (downloaded === null) {
-      await rm(temporary, { recursive: true, force: true });
-      log(`${short(job.hash)}: ERROR. The download failed. The next pass tries again.`);
+      // The part files stay in the temporary folder. The next pass resumes
+      // them. The line is in the Events feed already, so the history stays
+      // clean until the job ends.
+      log(`${short(job.hash)}: The download stopped. The next pass resumes it.`);
       return;
     }
 
@@ -194,6 +228,14 @@ export class Worker {
     await rm(temporary, { recursive: true, force: true });
 
     log(`${short(job.hash)}: Ready at '${paths.local}'. Radarr can import it now.`);
+    await this.store.record({
+      hash: job.hash,
+      title: job.title,
+      status: "downloaded",
+      at: Date.now(),
+      path: paths.relative,
+      ...(finalBytes === undefined ? {} : { bytes: finalBytes }),
+    });
     await this.store.markDone(job.hash);
   }
 }

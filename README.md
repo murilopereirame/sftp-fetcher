@@ -50,6 +50,12 @@ sequenceDiagram
 The download goes into `.incomplete/<infohash>/` first. The move into place is
 one filesystem operation, so Radarr never sees a part file.
 
+The download resumes. If the link drops, the part files stay in
+`.incomplete/`, and the next try reads each remote file from the byte it
+reached (an SFTP offset) and appends the rest. Nothing already copied is lost.
+This holds across a retry, a later pass, and a container restart, because
+`.incomplete/` is on the download volume.
+
 The data on the seedbox is never deleted. Seeding continues.
 
 ## Requirements
@@ -74,6 +80,7 @@ The data on the seedbox is never deleted. Seeding continues.
    ```
 
 5. In Radarr, add the webhook and the path mapping. See the next section.
+6. Open the web panel at `http://<this-host>:8080/` to watch the progress.
 
 ## The Radarr settings
 
@@ -159,12 +166,32 @@ the film. If not, Radarr copies it a second time.
 
 Set `QBIT_API_KEY` and leave `QBIT_AUTH` out, and the service picks `apikey`.
 
+## The web panel
+
+Open `http://<this-host>:8080/` in a browser. The panel is like the one in
+Sonarr and Radarr. It refreshes by itself. It has four tabs:
+
+| Tab | What it shows |
+| --- | --- |
+| Activity | The running download, with a progress bar, and the queue. |
+| Files | The files that this service put on the local disk. |
+| History | Every event: grabbed, downloaded, failed, expired. |
+| Events | The last log lines, newest first. |
+
+The panel is one page with no framework. It only reads the `/api` endpoints
+below. Nothing is written from the browser.
+
 ## The HTTP endpoints
 
 | Method and path | What it gives |
 | --- | --- |
+| `GET /` | The web panel (HTML). |
 | `POST /radarr` | The Radarr webhook. |
 | `GET /status` | The queue and the running download, as JSON. |
+| `GET /api/status` | The same, with raw numbers, for the panel. |
+| `GET /api/history` | The history of events, newest first. |
+| `GET /api/files` | The files on the local disk. |
+| `GET /api/activity` | The last log lines. |
 | `GET /health` | For the Docker health check. |
 
 Example of `GET /status` during a transfer:
@@ -249,8 +276,11 @@ webhook, with no network and no seedbox.
 | `src/qbittorrent.ts` | The Web API client. |
 | `src/sftp.ts` | The download, with progress. |
 | `src/paths.ts` | The path map. |
-| `src/store.ts` | The queue on disk. |
+| `src/store.ts` | The queue and the history on disk. |
 | `src/progress.ts` | The progress numbers and their form. |
+| `src/files.ts` | The list of files on the local disk. |
+| `src/events.ts` | The activity feed, in memory. |
+| `src/panel.ts` | The web panel: one HTML page. |
 | `src/config.ts` | All the environment variables. |
 
 ## The image
@@ -269,5 +299,7 @@ docker pull ghcr.io/<owner>/<repository>:latest
   started. Older downloads need the `curl` command above.
 - One download runs at a time. A second grab waits. This protects a slow link.
 - The queue is in `state/queue.json`. A restart does not lose a job.
+- A dropped download resumes from where it stopped, even after a restart. The
+  part files wait in `.incomplete/` on the download volume.
 - The container user must have the same UID and GID as Radarr. If not, Radarr
   cannot move the files after the import.

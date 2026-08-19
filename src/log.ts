@@ -1,7 +1,11 @@
+import { pushEvent } from "./events.js";
+
 /** Write one line to stdout. Read it with "docker logs". */
 export function log(message: string): void {
   const now = new Date().toISOString().replace("T", " ").slice(0, 19);
   console.log(`${now} ${message}`);
+  // The web panel reads the same lines from memory.
+  pushEvent(message);
 }
 
 /** Show only the first 8 characters of an infohash. The log stays short. */

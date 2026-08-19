@@ -21,13 +21,16 @@ Read `README.md` first. It has the full flow diagram and all settings.
 ```
 src/index.ts        entry point; loads app.ts inside a try
 src/app.ts          starts the HTTP server and the worker
-src/server.ts       POST /radarr, GET /status, GET /health
+src/server.ts       POST /radarr, GET /, GET /status, GET /api/*, GET /health
 src/worker.ts       the loop: poll, download, move
 src/qbittorrent.ts  the Web API client (apikey | password | none)
 src/sftp.ts         the download, with byte progress
 src/paths.ts        the path map between the four roots
-src/store.ts        the queue on disk
+src/store.ts        the queue and the history on disk
 src/progress.ts     the progress numbers and their form
+src/files.ts        the list of files on the local disk
+src/events.ts       the activity feed (last log lines), in memory
+src/panel.ts        the web panel: one HTML page, no framework
 src/config.ts       every environment variable, in one place
 test/               unit tests for the Node test runner
 ```
@@ -68,6 +71,14 @@ pass. There is no linter in this project.
 - **The download must be atomic.** The data goes into
   `LOCAL_ROOT/.incomplete/<infohash>/` first. The move into place is one
   rename. If Radarr sees a part file, it imports a broken film.
+- **The download resumes, so the part files must survive.** `.incomplete/` is
+  not wiped on a failed try, a later pass, or a restart. `src/sftp.ts` reads
+  each remote file from its local size (an SFTP `start` offset) and appends.
+  That needs a sequential copy: a whole local file is then always a correct
+  prefix of the remote file. Do not switch back to `fastGet`. It is faster but
+  writes chunks in parallel and can leave holes, so its part file is not a
+  prefix and cannot resume. Only a job that ends (done or expired or a bad
+  path) clears its `.incomplete/` folder.
 - **qBittorrent 5.2.0 added API keys.** The header is
   `Authorization: Bearer qbt_...`. There is no login call and no cookie in that
   mode. The `password` mode is for older versions only.
@@ -78,6 +89,10 @@ pass. There is no linter in this project.
   That is the reason for the webhook.
 - **The progress callback fires thousands of times.** The log line is throttled
   by `PROGRESS_INTERVAL`. Keep that throttle.
+- **The web panel is one template literal in `src/panel.ts`.** The client script
+  inside it must never use a backtick or a `${`. Both end the template literal
+  at build time. Build strings with `+`, and escape a browser-side `\u` as
+  `\\u`. The panel reads only the `/api/*` endpoints; it writes nothing.
 
 ## The test SFTP server
 
