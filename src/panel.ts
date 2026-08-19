@@ -137,6 +137,7 @@ export const panelHtml = `<!doctype html>
 <header>
   <span class="logo">sftp-fetcher</span>
   <span class="sub">seedbox &rarr; Radarr</span>
+  <span id="mode" class="sub"></span>
   <span class="spacer"></span>
   <span id="dot" class="dot idle"></span>
   <span id="state" class="sub">idle</span>
@@ -228,6 +229,10 @@ export const panelHtml = `<!doctype html>
   function renderStatus(s) {
     document.getElementById("c-queue").textContent = s.counts.queue;
     document.getElementById("c-history").textContent = s.counts.history;
+
+    if (s.mode) {
+      document.getElementById("mode").textContent = "via " + s.mode.toUpperCase();
+    }
 
     var dot = document.getElementById("dot");
     var state = document.getElementById("state");

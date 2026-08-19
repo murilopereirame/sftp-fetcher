@@ -26,13 +26,53 @@ function number(name: string, fallback: number): number {
   return parsed;
 }
 
+/** A yes/no setting. "1", "true", "yes", "on" mean true. */
+function boolean(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+/** A secret comes from a file (a Docker secret) or from a variable. */
+function secret(fileVar: string, plainVar: string, fallback = ""): string {
+  const file = optional(fileVar, "");
+  if (file !== "") {
+    const firstLine = readFileSync(file, "utf8").split("\n")[0] ?? "";
+    return firstLine.trim();
+  }
+  return optional(plainVar, fallback);
+}
+
 /** Remove the last slash. The path parts then join correctly. */
 function trim(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-/** The password comes from a file (a Docker secret) or from a variable. */
+/**
+ * Where the file data comes from.
+ *
+ *   "sftp"  the seedbox over SFTP. The old default. Simple, but slow.
+ *   "p2f"   a peer-to-file server, over its authenticated HTTP webseed.
+ *           Resumable, encrypted, and much faster on a lossy link.
+ *
+ * Only the settings for the chosen mode are required. See the two config
+ * blocks below.
+ */
+export type TransferMode = "sftp" | "p2f";
+
+function transferMode(): TransferMode {
+  const value = optional("TRANSFER_MODE", "sftp").toLowerCase();
+  if (value !== "sftp" && value !== "p2f") {
+    throw new Error('TRANSFER_MODE must be "sftp" or "p2f".');
+  }
+  return value;
+}
+
+const mode = transferMode();
+
+/** The SFTP password. Required only in the "sftp" mode. */
 function password(): string {
+  if (mode !== "sftp") return "";
   const file = optional("SFTP_PASSWORD_FILE", "");
   if (file !== "") {
     const firstLine = readFileSync(file, "utf8").split("\n")[0] ?? "";
@@ -73,18 +113,43 @@ function authMode(): QbitAuthMode {
 }
 
 export const config = {
+  /** "sftp" or "p2f". See transferMode() above. */
+  mode,
   http: {
     port: number("LISTEN_PORT", 8080),
     host: optional("LISTEN_HOST", "0.0.0.0"),
     path: trim(optional("WEBHOOK_PATH", "/radarr")),
   },
   sftp: {
-    host: required("SFTP_HOST"),
+    // The host is required only in the "sftp" mode.
+    host: mode === "sftp" ? required("SFTP_HOST") : optional("SFTP_HOST", ""),
     port: number("SFTP_PORT", 22),
     user: optional("SFTP_USER", "torrent"),
     password: password(),
     /** The SFTP server shows the torrent data under this folder. */
     remoteDir: trim(optional("REMOTE_DIR", "/uploads")),
+  },
+  p2f: {
+    // The URL and the token are required only in the "p2f" mode.
+    /** The peer-to-file server, e.g. http://10.0.0.1:8000. */
+    url: mode === "p2f" ? trim(required("P2F_URL")) : trim(optional("P2F_URL", "")),
+    /** An API token that starts with "p2f_". Make it on the server:
+     *  node src/server/cli.ts add-token <user> <name>. */
+    token:
+      mode === "p2f"
+        ? (() => {
+            const value = secret("P2F_TOKEN_FILE", "P2F_TOKEN");
+            if (value === "") throw new Error("P2F_TOKEN (or P2F_TOKEN_FILE) is not set.");
+            return value;
+          })()
+        : secret("P2F_TOKEN_FILE", "P2F_TOKEN"),
+    /** A prefix inside the server's shared root, if the tree is not at the
+     *  root. Like REMOTE_DIR for SFTP. Empty means the shared root itself. */
+    remoteDir: trim(optional("P2F_REMOTE_DIR", "")),
+    /** Check each finished file against the server's plaintext SHA-256. */
+    verify: boolean("P2F_VERIFY", true),
+    /** Drop a stalled connection after this many ms with no bytes. */
+    idleTimeoutMs: number("P2F_IDLE_TIMEOUT_MS", 60_000),
   },
   qbit: {
     url: trim(required("QBIT_URL")),

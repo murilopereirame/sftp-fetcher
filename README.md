@@ -1,7 +1,7 @@
 # sftp-fetcher
 
 A small service that brings finished torrents from a remote seedbox to the
-Radarr host over SFTP.
+Radarr host.
 
 Radarr and the download client are on different machines. Radarr cannot import
 a file that is not on its own disk. This service closes that gap: Radarr says
@@ -10,6 +10,15 @@ puts it where the Radarr **Remote Path Mapping** expects it. Radarr then
 imports the film by itself.
 
 The Radarr container stays as it is. No script goes inside it.
+
+It can copy the data two ways, set by `TRANSFER_MODE`:
+
+- **`sftp`** (the default) — the seedbox over SFTP. Simple, but slow.
+- **`p2f`** — a [peer-to-file](https://github.com/murilopereirame/peer-to-file)
+  server, over its authenticated, encrypted, resumable HTTP webseed. Much
+  faster and steadier on a lossy link. The transport lives in
+  [p2f-lib](https://github.com/murilopereirame/p2f-lib). See
+  [Transfer mode](#the-transfer-mode) below.
 
 ## How it works
 
@@ -119,12 +128,14 @@ Four names for the same tree. They must agree, or nothing is imported.
 | --- | --- | --- |
 | qBittorrent, on the seedbox | `QBIT_ROOT` | `/downloads` |
 | The SFTP server, on the seedbox | `REMOTE_DIR` | `/uploads` |
+| The peer-to-file shared root | `P2F_REMOTE_DIR` | `` (root) |
 | This container | `LOCAL_ROOT` | `/downloads` |
 | The Radarr container | Local Path, in the mapping | `/data/downloads` |
 
 The service keeps the part of the path after the root. A torrent at
 `/downloads/movies/Film.2024` on the seedbox becomes `/uploads/movies/Film.2024`
-over SFTP, and `/downloads/movies/Film.2024` in this container. Radarr sees
+over SFTP (or `movies/Film.2024` inside the peer-to-file shared root), and
+`/downloads/movies/Film.2024` in this container. Radarr sees
 `/data/downloads/movies/Film.2024`.
 
 Put `LOCAL_ROOT` on the same filesystem as the media library. Radarr then moves
@@ -134,12 +145,19 @@ the film. If not, Radarr copies it a second time.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `SFTP_HOST` | — | The seedbox address. Required. |
+| `TRANSFER_MODE` | `sftp` | `sftp` or `p2f`. See below. |
+| `SFTP_HOST` | — | The seedbox address. Required in the `sftp` mode. |
 | `SFTP_PORT` | `22` | The SFTP port. |
 | `SFTP_USER` | `torrent` | The SFTP user. |
 | `SFTP_PASSWORD` | — | The password. Use the file below instead. |
 | `SFTP_PASSWORD_FILE` | — | A file with the password on the first line. |
 | `REMOTE_DIR` | `/uploads` | The folder that the SFTP server shows. |
+| `P2F_URL` | — | The peer-to-file server. Required in the `p2f` mode. |
+| `P2F_TOKEN` | — | A `p2f_...` API token. Use the file below instead. |
+| `P2F_TOKEN_FILE` | — | A file with the token on the first line. |
+| `P2F_REMOTE_DIR` | `` | A prefix inside the server's shared root. Empty is the root. |
+| `P2F_VERIFY` | `true` | Check each finished file against the server's SHA-256. |
+| `P2F_IDLE_TIMEOUT_MS` | `60000` | Drop a stalled connection after this many ms. |
 | `QBIT_URL` | — | The qBittorrent Web API address. Required. |
 | `QBIT_AUTH` | see below | `apikey`, `password`, or `none`. |
 | `QBIT_API_KEY` | — | The key. It starts with `qbt_`. |
@@ -165,6 +183,42 @@ the film. If not, Radarr copies it a second time.
 | `none` | No credentials. | qBittorrent whitelists this IP. |
 
 Set `QBIT_API_KEY` and leave `QBIT_AUTH` out, and the service picks `apikey`.
+
+## The transfer mode
+
+`TRANSFER_MODE` chooses how the file data is copied. qBittorrent is still the
+source of truth about which torrent is done and where it lives; only the copy
+step changes.
+
+| `TRANSFER_MODE` | Source | Notes |
+| --- | --- | --- |
+| `sftp` | The seedbox over SFTP. | The default. Simple, but slow. |
+| `p2f` | A peer-to-file server. | Authenticated, encrypted, resumable HTTP. Faster and steadier. |
+
+Both modes resume: a stopped copy keeps its bytes in `.incomplete/` and the
+next pass finishes from the byte it reached. The active mode is shown in the
+web panel header and in `GET /status` (the `mode` field).
+
+### The p2f mode
+
+Point `P2F_URL` at your [peer-to-file](https://github.com/murilopereirame/peer-to-file)
+server (over the same VPN as the seedbox) and give it an API token. Make a
+token on the server:
+
+```sh
+node src/server/cli.ts add-token <user> <name>   # prints a p2f_... token once
+```
+
+Set it as `P2F_TOKEN`, or, better, `P2F_TOKEN_FILE` pointing at a Docker
+secret. The service fetches files over the server's HTTP webseed with byte-range
+resume, decrypts the AES-256-CTR stream as it arrives (the key is ECDH-wrapped
+per transfer, never sent in the clear), and checks each finished file against
+the server's plaintext SHA-256. All of that lives in the standalone
+[p2f-lib](https://github.com/murilopereirame/p2f-lib) package — no WebTorrent,
+no browser, no native modules.
+
+If the peer-to-file tree is not at the shared root, set `P2F_REMOTE_DIR` to the
+prefix, the same way `REMOTE_DIR` works for SFTP.
 
 ## The web panel
 
@@ -198,6 +252,7 @@ Example of `GET /status` during a transfer:
 
 ```json
 {
+  "mode": "sftp",
   "queue": [
     {
       "hash": "aabbccdd...",
@@ -274,7 +329,9 @@ webhook, with no network and no seedbox.
 | `src/server.ts` | The webhook and the status endpoint. |
 | `src/worker.ts` | The loop: poll, download, move. |
 | `src/qbittorrent.ts` | The Web API client. |
-| `src/sftp.ts` | The download, with progress. |
+| `src/fetcher.ts` | Picks the transport (SFTP or p2f) from the mode. |
+| `src/sftp.ts` | The SFTP download, with progress. |
+| `src/p2f.ts` | The peer-to-file download (via p2f-lib). |
 | `src/paths.ts` | The path map. |
 | `src/store.ts` | The queue and the history on disk. |
 | `src/progress.ts` | The progress numbers and their form. |

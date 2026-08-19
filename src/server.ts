@@ -58,6 +58,7 @@ function status(store: Store): unknown {
   const progress = getProgress();
 
   return {
+    mode: config.mode,
     queue: store.jobs().map((job) => ({
       hash: job.hash,
       title: job.title,
@@ -89,6 +90,7 @@ function apiStatus(store: Store): unknown {
   const progress = getProgress();
 
   return {
+    mode: config.mode,
     queue: store.jobs().map((job) => ({
       hash: job.hash,
       title: job.title,

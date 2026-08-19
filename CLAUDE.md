@@ -5,7 +5,8 @@ Context for Claude Code in this repository.
 ## What this project is
 
 `sftp-fetcher` is a small Node.js service. It brings finished torrents from a
-remote seedbox to the Radarr host over SFTP.
+remote seedbox to the Radarr host — over SFTP, or over the peer-to-file
+protocol (`TRANSFER_MODE=sftp|p2f`).
 
 The problem: Radarr and the download client are on different machines. Radarr
 cannot import a file that is not on its own disk.
@@ -24,7 +25,9 @@ src/app.ts          starts the HTTP server and the worker
 src/server.ts       POST /radarr, GET /, GET /status, GET /api/*, GET /health
 src/worker.ts       the loop: poll, download, move
 src/qbittorrent.ts  the Web API client (apikey | password | none)
-src/sftp.ts         the download, with byte progress
+src/fetcher.ts      picks the transport (sftp | p2f) from the mode
+src/sftp.ts         the SFTP download, with byte progress
+src/p2f.ts          the peer-to-file download (thin wrapper over p2f-lib)
 src/paths.ts        the path map between the four roots
 src/store.ts        the queue and the history on disk
 src/progress.ts     the progress numbers and their form
@@ -52,9 +55,13 @@ pass. There is no linter in this project.
 
 - **TypeScript, strict mode.** `noUncheckedIndexedAccess` is on. Do not use
   `any`. Do not use `!` to remove a null.
-- **One dependency.** `ssh2-sftp-client`. Do not add a framework, a test
-  runner, or a helper library. The HTTP server is `node:http`. The tests are
-  `node:test`.
+- **Two dependencies, both purposeful.** `ssh2-sftp-client` for the SFTP mode,
+  and `p2f-lib` (the extracted peer-to-file client, its own repo) for the p2f
+  mode. Do not add a framework, a test runner, or a helper library. The HTTP
+  server is `node:http`. The tests are `node:test`. `p2f-lib` is a git
+  dependency; keep the lockfile's `resolved` URL on `git+https` (npm's
+  `install` rewrites it to `git+ssh`, which breaks anonymous CI/Docker clones —
+  `npm ci` never rewrites it).
 - **All settings come from the environment**, and only through `src/config.ts`.
   Do not read `process.env` in another file.
 - **Comments in simple English.** Short sentences. Look at the current files
@@ -64,8 +71,15 @@ pass. There is no linter in this project.
 
 ## The traps
 
+- **Two transports, one worker.** The worker never calls SFTP or p2f directly;
+  it calls `src/fetcher.ts`, which builds the mode's remote path from the same
+  `relative` and dispatches. `src/sftp.ts` keeps taking a full remote path, so
+  it is unchanged. `src/p2f.ts` is a thin wrapper over `p2f-lib`. The p2f
+  download resumes the same way SFTP does (read from the local byte offset,
+  append) — the library handles the byte-range request and the decrypt.
 - **Four paths, one tree.** `QBIT_ROOT` (the seedbox path that qBittorrent
-  reports), `REMOTE_DIR` (the same tree over SFTP), `LOCAL_ROOT` (this
+  reports), `REMOTE_DIR` (the same tree over SFTP) or `P2F_REMOTE_DIR` (the
+  same tree inside the peer-to-file shared root), `LOCAL_ROOT` (this
   container), and the Radarr Local Path in the remote path mapping. A change to
   the map logic in `src/paths.ts` needs a test.
 - **The download must be atomic.** The data goes into
