@@ -6,6 +6,10 @@ services:
 
     # Use the same UID and GID as the Radarr container.
     # Radarr must be able to move and delete the files that this service writes.
+    #
+    # As an alternative, run this container as root (remove this line) and set
+    # PUID and PGID below. The service then chowns each finished file to that
+    # user, which also fixes a Radarr import permission error.
     user: "1000:1000"
 
     environment:
@@ -61,6 +65,20 @@ services:
       MAX_WAIT_HOURS: "48"
       COPY_TRIES: "3"
       COPY_WAIT: "60"
+
+      # --- File ownership (fixes a Radarr import permission error) ---
+      # Set these to the UID and the GID that Radarr runs as. Each finished
+      # file is then chowned to them, so Radarr can import it. This needs the
+      # container to run as root (remove the "user:" line above). Leave them
+      # out to keep the owner as it is.
+      # PUID: "1000"
+      # PGID: "1000"
+
+      # --- Clean up after an import ---
+      # Delete the local copy when Radarr sends its "On Import" webhook. The
+      # film is in the library by then, so the staged copy only wastes disk.
+      # The seedbox is never touched. Default true.
+      # REMOVE_AFTER_IMPORT: "true"
 
     volumes:
       # The same host folder that Radarr mounts as its download folder.

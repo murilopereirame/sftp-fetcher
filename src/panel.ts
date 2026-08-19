@@ -125,6 +125,47 @@ export const panelHtml = `<!doctype html>
   .tag.downloaded { background: rgba(34,197,94,.16); color: #86efac; }
   .tag.failed { background: rgba(239,68,68,.16); color: #fca5a5; }
   .tag.expired { background: rgba(245,158,11,.16); color: #fcd34d; }
+  .tag.removed { background: rgba(154,163,178,.16); color: #cbd5e1; }
+  .tag.imported { background: rgba(139,92,246,.16); color: #c4b5fd; }
+  button.rm {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.rm:hover { color: var(--red); border-color: var(--red); }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 640px; }
+  .form { display: flex; flex-direction: column; gap: 14px; max-width: 420px; }
+  .form label { color: var(--text); font-size: 13px; }
+  .form .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .form .pair { display: flex; gap: 12px; }
+  .form .pair label { flex: 1; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  .form input[type=text] {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .form input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .form .actions { display: flex; align-items: center; gap: 12px; }
+  button.save {
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.save:hover { filter: brightness(1.1); }
+  .form .msg { font-size: 13px; }
+  .form .msg.ok { color: var(--green); }
+  .form .msg.err { color: var(--red); }
   .empty { color: var(--muted); padding: 24px 4px; text-align: center; }
   .events { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   .events .row { display: flex; gap: 12px; padding: 5px 2px; border-bottom: 1px solid var(--line); }
@@ -147,6 +188,7 @@ export const panelHtml = `<!doctype html>
   <button data-tab="files">Files<span class="count" id="c-files">0</span></button>
   <button data-tab="history">History<span class="count" id="c-history">0</span></button>
   <button data-tab="events">Events</button>
+  <button data-tab="settings">Settings</button>
 </nav>
 <main>
   <section id="tab-activity" class="tab on">
@@ -172,6 +214,30 @@ export const panelHtml = `<!doctype html>
     <div class="card">
       <h2>Events</h2>
       <div id="events" class="events"></div>
+    </div>
+  </section>
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <h2>Permissions after a download</h2>
+      <p class="hint">Radarr imports a film by moving it, as its own user. Set
+      the owner or the mode here so the import has no permission error. Both are
+      off by default. A chown needs this container to run as root.</p>
+      <div class="form">
+        <label class="check"><input type="checkbox" id="set-chown"> Change the owner (chown)</label>
+        <div class="pair">
+          <label>UID<input type="text" id="set-uid" inputmode="numeric" placeholder="e.g. 1000"></label>
+          <label>GID<input type="text" id="set-gid" inputmode="numeric" placeholder="e.g. 1000"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="set-chmod"> Change the mode (chmod)</label>
+        <div class="pair">
+          <label>File mode<input type="text" id="set-filemode" inputmode="numeric" placeholder="e.g. 664"></label>
+          <label>Folder mode<input type="text" id="set-dirmode" inputmode="numeric" placeholder="e.g. 775"></label>
+        </div>
+        <div class="actions">
+          <button id="set-save" class="save">Save</button>
+          <span id="set-msg" class="msg"></span>
+        </div>
+      </div>
     </div>
   </section>
 </main>
@@ -222,6 +288,9 @@ export const panelHtml = `<!doctype html>
       document.querySelectorAll(".tab").forEach(function (t) {
         t.classList.toggle("on", t.id === "tab-" + current);
       });
+      // Load the settings once, on open. The tick must not reload them, or it
+      // would wipe out what the user is typing.
+      if (current === "settings") loadSettings();
       refreshTab();
     });
   });
@@ -270,11 +339,27 @@ export const panelHtml = `<!doctype html>
     var rows = s.queue.map(function (j) {
       return '<tr><td>' + esc(j.title) + '</td>' +
         '<td class="num">' + esc(j.hash.slice(0, 8)) + '</td>' +
-        '<td class="num">' + rel(Date.parse(j.waitingSince)) + '</td></tr>';
+        '<td class="num">' + rel(Date.parse(j.waitingSince)) + '</td>' +
+        '<td class="num"><button class="rm" data-hash="' + esc(j.hash) + '">Remove</button></td></tr>';
     }).join("");
     q.innerHTML =
-      '<div class="table-wrap"><table><thead><tr><th>Title</th><th>Hash</th><th>Waiting</th></tr></thead><tbody>' +
+      '<div class="table-wrap"><table><thead><tr><th>Title</th><th>Hash</th><th>Waiting</th><th></th></tr></thead><tbody>' +
       rows + '</tbody></table></div>';
+    q.querySelectorAll("button.rm").forEach(function (b) {
+      b.addEventListener("click", function () {
+        removeJob(b.getAttribute("data-hash"));
+      });
+    });
+  }
+
+  function removeJob(hash) {
+    if (!hash) return;
+    if (!confirm("Remove this torrent from the queue?")) return;
+    fetch("api/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash: hash })
+    }).then(function () { tick(); }).catch(function () {});
   }
 
   function renderFiles(data) {
@@ -327,6 +412,53 @@ export const panelHtml = `<!doctype html>
       return '<div class="row"><span class="ts">' + esc(t) + '</span><span class="msg">' + esc(e.message) + '</span></div>';
     }).join("");
   }
+
+  function fillSettings(s) {
+    document.getElementById("set-chown").checked = !!s.chown;
+    document.getElementById("set-uid").value = s.uid === null || s.uid === undefined ? "" : s.uid;
+    document.getElementById("set-gid").value = s.gid === null || s.gid === undefined ? "" : s.gid;
+    document.getElementById("set-chmod").checked = !!s.chmod;
+    document.getElementById("set-filemode").value = s.fileMode === null || s.fileMode === undefined ? "" : s.fileMode;
+    document.getElementById("set-dirmode").value = s.dirMode === null || s.dirMode === undefined ? "" : s.dirMode;
+  }
+
+  function loadSettings() {
+    getJson("api/settings").then(fillSettings).catch(function () {});
+  }
+
+  function setMsg(text, kind) {
+    var el = document.getElementById("set-msg");
+    el.textContent = text;
+    el.className = "msg" + (kind ? " " + kind : "");
+  }
+
+  function saveSettings() {
+    var body = {
+      chown: document.getElementById("set-chown").checked,
+      uid: document.getElementById("set-uid").value.trim(),
+      gid: document.getElementById("set-gid").value.trim(),
+      chmod: document.getElementById("set-chmod").checked,
+      fileMode: document.getElementById("set-filemode").value.trim(),
+      dirMode: document.getElementById("set-dirmode").value.trim()
+    };
+    setMsg("Saving\\u2026", "");
+    fetch("api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+    }).then(function (res) {
+      if (res.ok && res.data.ok) {
+        fillSettings(res.data.settings);
+        setMsg("Saved.", "ok");
+      } else {
+        setMsg(res.data && res.data.reason ? res.data.reason : "Could not save.", "err");
+      }
+    }).catch(function () { setMsg("Could not save.", "err"); });
+  }
+
+  document.getElementById("set-save").addEventListener("click", saveSettings);
 
   function refreshTab() {
     if (current === "files") getJson("api/files").then(renderFiles).catch(function () {});

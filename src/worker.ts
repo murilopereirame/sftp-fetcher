@@ -13,8 +13,10 @@
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
+import { incompleteDir, removeIncomplete } from "./files.js";
 import { errorText, log, short } from "./log.js";
 import { mapPaths } from "./paths.js";
+import { applyPermissions } from "./permissions.js";
 import { getProgress, line, setProgress, type Progress } from "./progress.js";
 import { QBittorrent } from "./qbittorrent.js";
 import { fetchTo } from "./fetcher.js";
@@ -30,11 +32,6 @@ async function exists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/** The temporary folder for one job. The part files wait here between tries. */
-function incompleteDir(hash: string): string {
-  return path.join(config.localRoot, ".incomplete", hash);
 }
 
 export class Worker {
@@ -78,7 +75,7 @@ export class Worker {
           at: Date.now(),
         });
         // The job ends here, so the part files are not needed. Remove them.
-        await rm(incompleteDir(job.hash), { recursive: true, force: true });
+        await removeIncomplete(job.hash);
         await this.store.remove(job.hash);
         continue;
       }
@@ -159,7 +156,7 @@ export class Worker {
         status: "failed",
         at: Date.now(),
       });
-      await rm(incompleteDir(job.hash), { recursive: true, force: true });
+      await removeIncomplete(job.hash);
       await this.store.remove(job.hash);
       return;
     }
@@ -173,7 +170,7 @@ export class Worker {
         at: Date.now(),
         path: paths.relative,
       });
-      await this.store.markDone(job.hash);
+      await this.store.markDone(job.hash, { path: paths.relative });
       return;
     }
 
@@ -227,6 +224,10 @@ export class Worker {
     await rename(downloaded, paths.local);
     await rm(temporary, { recursive: true, force: true });
 
+    // Set the owner and the mode, so the Radarr import has no permission
+    // error. What runs here is set in the web panel (see Settings).
+    await applyPermissions(paths.local, this.store.settings());
+
     log(`${short(job.hash)}: Ready at '${paths.local}'. Radarr can import it now.`);
     await this.store.record({
       hash: job.hash,
@@ -236,6 +237,9 @@ export class Worker {
       path: paths.relative,
       ...(finalBytes === undefined ? {} : { bytes: finalBytes }),
     });
-    await this.store.markDone(job.hash);
+    await this.store.markDone(job.hash, {
+      path: paths.relative,
+      ...(finalBytes === undefined ? {} : { bytes: finalBytes }),
+    });
   }
 }

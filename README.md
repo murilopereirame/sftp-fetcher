@@ -101,9 +101,15 @@ The data on the seedbox is never deleted. Seeding continues.
 | --- | --- |
 | Name | `sftp-fetcher` |
 | On Grab | on |
+| On Import | on |
 | All other triggers | off |
 | URL | `http://sftp-fetcher:8080/radarr` |
 | Method | POST |
+
+**On Grab** is the trigger that starts a download. **On Import** is optional:
+turn it on, and the service deletes its local copy once Radarr has imported the
+film, so the disk does not fill. See `REMOVE_AFTER_IMPORT` below. The seedbox is
+never touched. Leave **On Import** off to keep every local copy.
 
 Press **Test**. One line must show in the log. Then press **Save**.
 
@@ -165,7 +171,10 @@ the film. If not, Radarr copies it a second time.
 | `QBIT_PASS` | `adminadmin` | For the `password` mode only. |
 | `QBIT_ROOT` | `/downloads` | The prefix that qBittorrent reports. |
 | `LOCAL_ROOT` | `/downloads` | The download folder in this container. |
-| `STATE_DIR` | `/state` | The queue and the done list. |
+| `STATE_DIR` | `/state` | The SQLite database (`fetcher.db`) lives here. |
+| `PUID` | — | Chown each finished file to this UID. See below. |
+| `PGID` | — | Chown each finished file to this GID. See below. |
+| `REMOVE_AFTER_IMPORT` | `true` | Delete the local copy on the Radarr import webhook. |
 | `LISTEN_PORT` | `8080` | The webhook port. |
 | `WEBHOOK_PATH` | `/radarr` | The webhook path. |
 | `POLL_INTERVAL` | `60` | Seconds between two passes over the queue. |
@@ -183,6 +192,39 @@ the film. If not, Radarr copies it a second time.
 | `none` | No credentials. | qBittorrent whitelists this IP. |
 
 Set `QBIT_API_KEY` and leave `QBIT_AUTH` out, and the service picks `apikey`.
+
+### File ownership and mode
+
+Radarr imports a film by moving or copying the file, as its own user. If the
+owner or the mode is wrong, the import fails with a permission error.
+
+There are two ways to fix that:
+
+- Run this container as the same user as Radarr (the `user: "1000:1000"` line
+  in the compose file). The file is then written with the right owner from the
+  start.
+- Or run this container as `root` and let it set the owner and the mode of each
+  finished file for you. The **Settings** tab of the web panel has two
+  switches:
+  - **Change the owner (chown)** — set the UID and GID that Radarr runs as.
+  - **Change the mode (chmod)** — set the file mode (e.g. `664`) and the folder
+    mode (e.g. `775`), for the case where the two share a group and the file
+    must be group-writable.
+
+Both switches are off by default. The preferences live in the database, so a
+change takes effect on the next download with no restart. `PUID` and `PGID`
+seed the chown switch on the first start, so the environment-only setup still
+works. A chown or a group chmod needs `root`; if the container runs as a normal
+user, the step is skipped and one line is logged.
+
+### Cleaning up after an import
+
+When `REMOVE_AFTER_IMPORT` is on (the default) and the Radarr **On Import**
+webhook is enabled, the service deletes its local copy of a film once Radarr
+reports the import. The film is already in the library, so the staged copy only
+wastes disk. The service finds the copy by the infohash Radarr sends, so it
+never deletes a file it did not stage. **The seedbox is never touched.** Set
+`REMOVE_AFTER_IMPORT` to `false` to keep every local copy.
 
 ## The transfer mode
 
@@ -229,18 +271,26 @@ Sonarr and Radarr. It refreshes by itself. It has four tabs:
 | --- | --- |
 | Activity | The running download, with a progress bar, and the queue. |
 | Files | The files that this service put on the local disk. |
-| History | Every event: grabbed, downloaded, failed, expired. |
+| History | Every event: grabbed, downloaded, failed, expired, removed, imported. |
 | Events | The last log lines, newest first. |
+| Settings | The chown and chmod preferences for the finished files. |
 
-The panel is one page with no framework. It only reads the `/api` endpoints
-below. Nothing is written from the browser.
+Each row in the queue has a **Remove** button. Use it when a torrent goes stale
+and needs a hand: it drops the job and its part files. The seedbox is not
+touched.
+
+The panel is one page with no framework. It reads the `/api` endpoints below,
+and the Remove button is its one write, a `POST /api/remove`.
 
 ## The HTTP endpoints
 
 | Method and path | What it gives |
 | --- | --- |
 | `GET /` | The web panel (HTML). |
-| `POST /radarr` | The Radarr webhook. |
+| `POST /radarr` | The Radarr webhook (On Grab and On Import). |
+| `POST /api/remove` | Take a torrent out of the queue. Body: `{"hash":"..."}`. |
+| `GET /api/settings` | The chown and chmod preferences. |
+| `POST /api/settings` | Change them. Body: the fields to change. |
 | `GET /status` | The queue and the running download, as JSON. |
 | `GET /api/status` | The same, with raw numbers, for the panel. |
 | `GET /api/history` | The history of events, newest first. |
@@ -333,7 +383,8 @@ webhook, with no network and no seedbox.
 | `src/sftp.ts` | The SFTP download, with progress. |
 | `src/p2f.ts` | The peer-to-file download (via p2f-lib). |
 | `src/paths.ts` | The path map. |
-| `src/store.ts` | The queue and the history on disk. |
+| `src/store.ts` | The queue, the history, and the settings, in SQLite. |
+| `src/permissions.ts` | The chown and chmod of a finished file. |
 | `src/progress.ts` | The progress numbers and their form. |
 | `src/files.ts` | The list of files on the local disk. |
 | `src/events.ts` | The activity feed, in memory. |
@@ -355,8 +406,14 @@ docker pull ghcr.io/<owner>/<repository>:latest
 - The service only knows the torrents that Radarr grabbed after the webhook
   started. Older downloads need the `curl` command above.
 - One download runs at a time. A second grab waits. This protects a slow link.
-- The queue is in `state/queue.json`. A restart does not lose a job.
+- The queue, the finished list, and the history are in a SQLite database at
+  `state/fetcher.db`. A restart does not lose a job. (`node:sqlite` is a part
+  of Node, so this is not a new dependency.)
+- A stale job can be dropped by hand from the **Remove** button in the panel.
+- With the Radarr **On Import** webhook on, the local copy is deleted after the
+  import, so the disk does not fill. The seedbox is never touched.
 - A dropped download resumes from where it stopped, even after a restart. The
   part files wait in `.incomplete/` on the download volume.
-- The container user must have the same UID and GID as Radarr. If not, Radarr
-  cannot move the files after the import.
+- The container user should have the same UID and GID as Radarr. If it cannot,
+  run this container as `root` and set the owner or the mode of the finished
+  files from the **Settings** tab. See [File ownership and mode](#file-ownership-and-mode).
