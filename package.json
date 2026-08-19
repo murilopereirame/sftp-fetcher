@@ -16,6 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "p2f-lib": "git+https://github.com/murilopereirame/p2f-lib.git#main",
     "ssh2-sftp-client": "^11.0.0"
   },
   "devDependencies": {

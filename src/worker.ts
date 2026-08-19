@@ -17,7 +17,7 @@ import { errorText, log, short } from "./log.js";
 import { mapPaths } from "./paths.js";
 import { getProgress, line, setProgress, type Progress } from "./progress.js";
 import { QBittorrent } from "./qbittorrent.js";
-import { download } from "./sftp.js";
+import { fetchTo } from "./fetcher.js";
 import type { Job, Store } from "./store.js";
 
 const sleep = (seconds: number): Promise<void> =>
@@ -192,8 +192,8 @@ export class Worker {
     let downloaded: string | null = null;
     for (let attempt = 1; attempt <= config.timing.copyTries; attempt += 1) {
       try {
-        downloaded = await download(
-          paths.remote,
+        downloaded = await fetchTo(
+          paths.relative,
           temporary,
           this.reporter(job, paths.relative),
         );

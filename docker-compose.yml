@@ -9,12 +9,32 @@ services:
     user: "1000:1000"
 
     environment:
-      # --- The SFTP server on the seedbox ---
+      # --- Where the file data comes from ---
+      # TRANSFER_MODE: sftp | p2f
+      #   sftp  the seedbox over SFTP (the default). Simple, but slow.
+      #   p2f   a peer-to-file server, over its authenticated HTTP webseed.
+      #         Resumable, encrypted, and much faster on a lossy link.
+      TRANSFER_MODE: "sftp"
+
+      # --- The SFTP server on the seedbox (TRANSFER_MODE=sftp) ---
       SFTP_HOST: "10.9.0.11"
       SFTP_PORT: "22"
       SFTP_USER: "torrent"
       SFTP_PASSWORD_FILE: "/run/secrets/sftp_password"
       REMOTE_DIR: "/uploads"
+
+      # --- The peer-to-file server (TRANSFER_MODE=p2f) ---
+      # P2F_URL: "http://10.9.0.11:8000"
+      # A p2f_... API token. Make one on the server:
+      #   node src/server/cli.ts add-token <user> <name>
+      # Prefer the file form (a Docker secret) over the plain variable.
+      # P2F_TOKEN_FILE: "/run/secrets/p2f_token"
+      # P2F_TOKEN: "p2f_xxxxxxxxxxxxxxxxxxxx"
+      # A prefix inside the server's shared root, if the tree is not at the
+      # root. Empty means the shared root itself.
+      # P2F_REMOTE_DIR: ""
+      # Check each finished file against the server's plaintext SHA-256.
+      # P2F_VERIFY: "true"
 
       # --- The qBittorrent Web API on the seedbox ---
       QBIT_URL: "http://10.9.0.11:8080"

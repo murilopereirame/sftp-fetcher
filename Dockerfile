@@ -2,10 +2,14 @@
 FROM node:22-alpine AS build
 
 WORKDIR /app
+# git is needed to install the p2f-lib dependency from GitHub.
+RUN apk add --no-cache git
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
 RUN npm run build
+# Drop the dev dependencies so the node_modules copied below is production-only.
+RUN npm prune --omit=dev
 
 # ---- run ----
 FROM node:22-alpine
@@ -14,7 +18,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Reuse the pruned, already-built node_modules from the build stage. This
+# avoids a second install (and needing git) in the runtime image, and keeps
+# the compiled p2f-lib that its install step built.
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
 EXPOSE 8080
