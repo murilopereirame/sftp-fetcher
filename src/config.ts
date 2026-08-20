@@ -132,7 +132,10 @@ export const config = {
   http: {
     port: number("LISTEN_PORT", 8080),
     host: optional("LISTEN_HOST", "0.0.0.0"),
-    path: trim(optional("WEBHOOK_PATH", "/radarr")),
+    /** Radarr posts its "On Grab" and "On Import" webhooks here. */
+    radarrPath: trim(optional("WEBHOOK_PATH", "/radarr")),
+    /** Sonarr posts its "On Grab" and "On Import" webhooks here. */
+    sonarrPath: trim(optional("SONARR_WEBHOOK_PATH", "/sonarr")),
   },
   sftp: {
     // The host is required only in the "sftp" mode.

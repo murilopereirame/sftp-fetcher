@@ -1,13 +1,17 @@
 # sftp-fetcher
 
 A small service that brings finished torrents from a remote seedbox to the
-Radarr host.
+Radarr (or Sonarr) host.
 
 Radarr and the download client are on different machines. Radarr cannot import
 a file that is not on its own disk. This service closes that gap: Radarr says
 "I grabbed something", the service waits for the torrent, copies the data, and
 puts it where the Radarr **Remote Path Mapping** expects it. Radarr then
 imports the film by itself.
+
+Sonarr works the same way, over its own webhook path (`/sonarr`). The two apps
+send the same events, so the service serves both; the examples below use Radarr,
+and every step applies to Sonarr with the series in place of the film.
 
 The Radarr container stays as it is. No script goes inside it.
 
@@ -116,6 +120,10 @@ Press **Test**. One line must show in the log. Then press **Save**.
 Radarr and this service must share a Docker network. If Radarr cannot find the
 name `sftp-fetcher`, publish the port and use the host address.
 
+For **Sonarr**, add the same webhook under its own **Settings > Connect**, but
+point the URL at the Sonarr path: `http://sftp-fetcher:8080/sonarr`. Everything
+else is identical. Both apps can point at the same running service at once.
+
 ### The remote path mapping
 
 **Settings > Download Clients > Remote Path Mapping > +**
@@ -174,9 +182,10 @@ the film. If not, Radarr copies it a second time.
 | `STATE_DIR` | `/state` | The SQLite database (`fetcher.db`) lives here. |
 | `PUID` | — | Chown each finished file to this UID. See below. |
 | `PGID` | — | Chown each finished file to this GID. See below. |
-| `REMOVE_AFTER_IMPORT` | `true` | Delete the local copy on the Radarr import webhook. |
+| `REMOVE_AFTER_IMPORT` | `true` | Delete the local copy on the Radarr or Sonarr import webhook. |
 | `LISTEN_PORT` | `8080` | The webhook port. |
-| `WEBHOOK_PATH` | `/radarr` | The webhook path. |
+| `WEBHOOK_PATH` | `/radarr` | The Radarr webhook path. |
+| `SONARR_WEBHOOK_PATH` | `/sonarr` | The Sonarr webhook path. |
 | `POLL_INTERVAL` | `60` | Seconds between two passes over the queue. |
 | `MAX_WAIT_HOURS` | `48` | A job stops after this time. |
 | `COPY_TRIES` | `3` | Attempts for one download. |
@@ -288,6 +297,7 @@ and the Remove button is its one write, a `POST /api/remove`.
 | --- | --- |
 | `GET /` | The web panel (HTML). |
 | `POST /radarr` | The Radarr webhook (On Grab and On Import). |
+| `POST /sonarr` | The Sonarr webhook (On Grab and On Import). |
 | `POST /api/remove` | Take a torrent out of the queue. Body: `{"hash":"..."}`. |
 | `GET /api/settings` | The chown and chmod preferences. |
 | `POST /api/settings` | Change them. Body: the fields to change. |

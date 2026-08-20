@@ -116,6 +116,41 @@ test("an import event deletes the staged local copy", async () => {
   );
 });
 
+test("a Sonarr grab puts the torrent in the queue with the series title", async () => {
+  const hash = "99887766554433221100ffeeddccbbaa99887766";
+  const response = await post("/sonarr", {
+    eventType: "Grab",
+    downloadId: hash,
+    series: { title: "Show" },
+  });
+
+  assert.equal(response.status, 200);
+  const job = store.jobs().find((item) => item.hash === hash.toLowerCase());
+  assert.ok(job, "the job is in the queue");
+  assert.equal(job.title, "Show");
+});
+
+test("a Sonarr import deletes the staged local copy", async () => {
+  const hash = "aabbccddeeff00112233445566778899aabbccdd";
+  const relative = path.join("tv", "Show.S01E01", "episode.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "episode data");
+  await store.markDone(hash, { path: relative });
+
+  const response = await post("/sonarr", {
+    eventType: "Download",
+    downloadId: hash.toUpperCase(),
+    series: { title: "Show" },
+  });
+  assert.equal(response.status, 200);
+
+  await assert.rejects(stat(full), "the staged file is deleted");
+  assert.ok(
+    store.history().some((h) => h.hash === hash && h.status === "imported"),
+  );
+});
+
 test("a grab without a downloadId changes nothing", async () => {
   const before_ = store.jobs().length;
   const response = await post("/radarr", { eventType: "Grab" });

@@ -1,11 +1,13 @@
 /**
  * The webhook server.
  *
- * Radarr sends a POST for each grab. The payload holds "downloadId".
- * For a torrent, that value is the infohash. That is all this program needs.
+ * Radarr and Sonarr each send a POST for every grab. The payload holds
+ * "downloadId". For a torrent, that value is the infohash. That is all this
+ * program needs. The two apps send the same events, so one handler serves
+ * both; only the path and the title field differ.
  *
- * Radarr connection: Settings > Connect > Webhook.
- * Select the trigger "On Grab" only.
+ * Connection: Settings > Connect > Webhook.
+ * Select the triggers "On Grab" and (optionally) "On Import".
  */
 import http from "node:http";
 import { config } from "./config.js";
@@ -16,11 +18,24 @@ import { panelHtml } from "./panel.js";
 import { bytes, duration, getProgress, percent } from "./progress.js";
 import type { Settings, Store } from "./store.js";
 
-interface RadarrWebhook {
+interface ArrWebhook {
   eventType?: string;
   downloadId?: string;
   release?: { releaseTitle?: string };
+  /** Radarr sends this. */
   movie?: { title?: string };
+  /** Sonarr sends this. */
+  series?: { title?: string };
+}
+
+/** The best name for a job: the release, then the movie or the series. */
+function webhookTitle(payload: ArrWebhook): string {
+  return (
+    payload.release?.releaseTitle ??
+    payload.movie?.title ??
+    payload.series?.title ??
+    "unknown"
+  );
 }
 
 /** Keep the hex characters only. A bad value cannot become a path. */
@@ -190,30 +205,51 @@ async function handle(
     return;
   }
 
-  if (request.method !== "POST" || target !== config.http.path) {
-    reply(response, 404, "not found");
+  // Radarr and Sonarr post their webhooks here. The payloads differ only in
+  // the title field, so one handler serves both. The source label is for the
+  // log line only.
+  if (request.method === "POST" && target === config.http.radarrPath) {
+    await handleWebhook(request, response, store, "Radarr");
+    return;
+  }
+  if (request.method === "POST" && target === config.http.sonarrPath) {
+    await handleWebhook(request, response, store, "Sonarr");
     return;
   }
 
-  let payload: RadarrWebhook;
+  reply(response, 404, "not found");
+}
+
+/**
+ * Handle a webhook from Radarr or Sonarr. Both apps send the same events:
+ * "Grab" starts a job, "Download" (an import) frees the staged local copy, and
+ * "Test" does nothing. The infohash is in "downloadId".
+ */
+async function handleWebhook(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  store: Store,
+  source: string,
+): Promise<void> {
+  let payload: ArrWebhook;
   try {
-    payload = JSON.parse(await readBody(request)) as RadarrWebhook;
+    payload = JSON.parse(await readBody(request)) as ArrWebhook;
   } catch {
     reply(response, 400, "bad json");
     return;
   }
 
-  // Radarr sends this when you press the Test button.
+  // Radarr and Sonarr send this when you press the Test button.
   if (payload.eventType === "Test") {
-    log("The Radarr test webhook arrived.");
+    log(`The ${source} test webhook arrived.`);
     reply(response, 200, "ok");
     return;
   }
 
-  // "Download" is the Radarr word for a finished import. The film is in the
-  // library now, so the local copy this program staged can go.
+  // "Download" is the word for a finished import. The film or the episode is
+  // in the library now, so the local copy this program staged can go.
   if (payload.eventType === "Download") {
-    await handleImport(payload, store);
+    await handleImport(payload, store, source);
     reply(response, 200, "ok");
     return;
   }
@@ -223,7 +259,7 @@ async function handle(
     return;
   }
 
-  const title = payload.release?.releaseTitle ?? payload.movie?.title ?? "unknown";
+  const title = webhookTitle(payload);
   const hash = cleanHash(payload.downloadId);
 
   if (hash === "") {
@@ -276,11 +312,12 @@ async function handleRemove(
 }
 
 /**
- * React to a Radarr import. Delete the local copy that this program staged,
- * so the disk is free. The path comes from the store, by the infohash. If the
- * torrent is unknown, or the file is already gone, this does nothing.
+ * React to a Radarr or Sonarr import. Delete the local copy that this program
+ * staged, so the disk is free. The path comes from the store, by the infohash.
+ * If the torrent is unknown, or the file is already gone, this does nothing.
+ * The seedbox is never touched; only the local staged copy.
  */
-async function handleImport(payload: RadarrWebhook, store: Store): Promise<void> {
+async function handleImport(payload: ArrWebhook, store: Store, source: string): Promise<void> {
   if (!config.removeAfterImport) return;
 
   const hash = cleanHash(payload.downloadId);
@@ -288,17 +325,17 @@ async function handleImport(payload: RadarrWebhook, store: Store): Promise<void>
 
   const relative = store.donePath(hash);
   if (relative === null) {
-    log(`${short(hash)}: Radarr imported a torrent this program does not know.`);
+    log(`${short(hash)}: ${source} imported a torrent this program does not know.`);
     return;
   }
 
-  const title = payload.movie?.title ?? relative;
+  const title = payload.movie?.title ?? payload.series?.title ?? relative;
   const removed = await removeLocal(relative);
   if (removed) {
-    log(`${short(hash)}: Radarr imported it. The local copy '${relative}' is deleted.`);
+    log(`${short(hash)}: ${source} imported it. The local copy '${relative}' is deleted.`);
     await store.record({ hash, title, status: "imported", at: Date.now(), path: relative });
   } else {
-    log(`${short(hash)}: Radarr imported it. The local copy was gone already.`);
+    log(`${short(hash)}: ${source} imported it. The local copy was gone already.`);
   }
 }
 

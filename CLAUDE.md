@@ -22,7 +22,7 @@ Read `README.md` first. It has the full flow diagram and all settings.
 ```
 src/index.ts        entry point; loads app.ts inside a try
 src/app.ts          starts the HTTP server and the worker
-src/server.ts       POST /radarr, GET /, GET /status, GET /api/*, GET /health
+src/server.ts       POST /radarr, POST /sonarr, GET /, GET /status, GET /api/*, GET /health
 src/worker.ts       the loop: poll, download, move
 src/qbittorrent.ts  the Web API client (apikey | password | none)
 src/fetcher.ts      picks the transport (sftp | p2f) from the mode
@@ -118,6 +118,13 @@ pass. There is no linter in this project.
   `LOCAL_ROOT`, never a `..` escape, and never the root itself. **The seedbox is
   never touched; only the local staged copy.** Gate it with
   `REMOVE_AFTER_IMPORT`.
+- **Radarr and Sonarr share one webhook handler.** They post to two paths
+  (`WEBHOOK_PATH`, default `/radarr`, and `SONARR_WEBHOOK_PATH`, default
+  `/sonarr`), but send the same events (Grab, Download, Test) with the infohash
+  in `downloadId`. `src/server.ts` routes both paths to `handleWebhook` with a
+  source label for the log. The only payload difference is the title field:
+  Radarr sends `movie.title`, Sonarr sends `series.title`. `webhookTitle` and
+  `handleImport` read both.
 - **The permissions run after the rename, from the DB settings.** The chown and
   chmod of a finished file are preferences in the `settings` table, set from the
   panel, not env-only. `PUID`/`PGID` only seed the chown on the first start. The

@@ -34,7 +34,9 @@ export async function start(): Promise<void> {
 
   const server = createServer(store);
   server.listen(config.http.port, config.http.host, () => {
-    log(`The webhook URL is http://<this-container>:${config.http.port}${config.http.path}`);
+    const at = `http://<this-container>:${config.http.port}`;
+    log(`The Radarr webhook URL is ${at}${config.http.radarrPath}`);
+    log(`The Sonarr webhook URL is ${at}${config.http.sonarrPath}`);
   });
 
   const stop = (signal: string): void => {
