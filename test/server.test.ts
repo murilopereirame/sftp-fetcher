@@ -116,6 +116,102 @@ test("an import event deletes the staged local copy", async () => {
   );
 });
 
+test("a Sonarr grab puts the torrent in the queue with the series title", async () => {
+  const hash = "99887766554433221100ffeeddccbbaa99887766";
+  const response = await post("/sonarr", {
+    eventType: "Grab",
+    downloadId: hash,
+    series: { title: "Show" },
+  });
+
+  assert.equal(response.status, 200);
+  const job = store.jobs().find((item) => item.hash === hash.toLowerCase());
+  assert.ok(job, "the job is in the queue");
+  assert.equal(job.title, "Show");
+});
+
+test("a Sonarr import deletes the staged local copy", async () => {
+  const hash = "aabbccddeeff00112233445566778899aabbccdd";
+  const relative = path.join("tv", "Show.S01E01", "episode.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "episode data");
+  await store.markDone(hash, { path: relative });
+
+  const response = await post("/sonarr", {
+    eventType: "Download",
+    downloadId: hash.toUpperCase(),
+    series: { title: "Show" },
+  });
+  assert.equal(response.status, 200);
+
+  await assert.rejects(stat(full), "the staged file is deleted");
+  assert.ok(
+    store.history().some((h) => h.hash === hash && h.status === "imported"),
+  );
+});
+
+test("a season-pack import deletes only the imported episode, then the folder", async () => {
+  const hash = "1122334455667788990011223344556677889900";
+  const dir = path.join("tv", "Pack.S01");
+  const full = path.join(config.localRoot, dir);
+  await mkdir(full, { recursive: true });
+  const ep1 = path.join(full, "Pack.S01E01.mkv");
+  const ep2 = path.join(full, "Pack.S01E02.mkv");
+  const nfo = path.join(full, "pack.nfo");
+  await writeFile(ep1, "x".repeat(11));
+  await writeFile(ep2, "y".repeat(22));
+  await writeFile(nfo, "z".repeat(3));
+  await store.markDone(hash, { path: dir });
+
+  // Import episode 1. Sonarr sends the size of the file it imported. Only that
+  // episode is deleted; episode 2 and the folder stay.
+  let response = await post("/sonarr", {
+    eventType: "Download",
+    downloadId: hash.toUpperCase(),
+    series: { title: "Pack" },
+    episodeFile: { size: 11 },
+  });
+  assert.equal(response.status, 200);
+  await assert.rejects(stat(ep1), "episode 1 is deleted");
+  assert.ok(await stat(ep2), "episode 2 stays");
+  assert.ok(await stat(full), "the folder stays");
+
+  // Import episode 2. Now no video is left, so the whole folder goes.
+  response = await post("/sonarr", {
+    eventType: "Download",
+    downloadId: hash.toUpperCase(),
+    series: { title: "Pack" },
+    episodeFile: { size: 22 },
+  });
+  assert.equal(response.status, 200);
+  await assert.rejects(stat(full), "the folder is deleted once empty of videos");
+});
+
+test("the redownload endpoint queues a finished torrent again", async () => {
+  const hash = "abcabcabcabcabcabcabcabcabcabcabcabcabc0";
+  const relative = path.join("movies", "Redo.2024", "film.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "movie data");
+  await store.record({ hash, title: "Redo", status: "downloaded", at: Date.now(), path: relative });
+  await store.markDone(hash, { path: relative });
+
+  const response = await post("/api/redownload", { hash });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, true);
+
+  assert.ok(store.jobs().some((j) => j.hash === hash), "the job is queued again");
+  await assert.rejects(stat(full), "the staged copy is removed");
+  assert.equal(store.donePath(hash), null, "it is no longer marked done");
+});
+
+test("redownloading an unknown torrent gives 404", async () => {
+  const response = await post("/api/redownload", { hash: "ffffffffffffffffffffffffffffffffffffffff" });
+  assert.equal(response.status, 404);
+});
+
 test("a grab without a downloadId changes nothing", async () => {
   const before_ = store.jobs().length;
   const response = await post("/radarr", { eventType: "Grab" });

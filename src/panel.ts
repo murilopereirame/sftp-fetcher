@@ -137,6 +137,7 @@ export const panelHtml = `<!doctype html>
     cursor: pointer;
   }
   button.rm:hover { color: var(--red); border-color: var(--red); }
+  button.rm.redl:hover { color: var(--green); border-color: var(--green); }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 640px; }
   .form { display: flex; flex-direction: column; gap: 14px; max-width: 420px; }
   .form label { color: var(--text); font-size: 13px; }
@@ -380,6 +381,10 @@ export const panelHtml = `<!doctype html>
       '</tbody></table></div>';
   }
 
+  // The events that a torrent can be re-downloaded from. A "grabbed" event is
+  // still in the queue, so it gets no button.
+  var canRedownload = { downloaded: 1, imported: 1, failed: 1, expired: 1, removed: 1 };
+
   function renderHistory(list) {
     document.getElementById("c-history").textContent = list.length;
     var el = document.getElementById("history");
@@ -390,15 +395,34 @@ export const panelHtml = `<!doctype html>
     var rows = list.map(function (h) {
       var size = h.bytes ? fmtBytes(h.bytes) : "\\u2014";
       var name = h.path ? h.path : h.title;
+      var action = canRedownload[h.status] && h.hash
+        ? '<button class="rm redl" data-hash="' + esc(h.hash) + '">Redownload</button>'
+        : '';
       return '<tr>' +
         '<td><span class="tag ' + h.status + '">' + h.status + '</span></td>' +
         '<td class="path">' + esc(name) + '</td>' +
         '<td class="num">' + size + '</td>' +
-        '<td class="num" title="' + esc(clock(h.at)) + '">' + rel(h.at) + '</td></tr>';
+        '<td class="num" title="' + esc(clock(h.at)) + '">' + rel(h.at) + '</td>' +
+        '<td class="num">' + action + '</td></tr>';
     }).join("");
     el.innerHTML =
-      '<div class="table-wrap"><table><thead><tr><th>Event</th><th>Title</th><th>Size</th><th>When</th></tr></thead><tbody>' +
+      '<div class="table-wrap"><table><thead><tr><th>Event</th><th>Title</th><th>Size</th><th>When</th><th></th></tr></thead><tbody>' +
       rows + '</tbody></table></div>';
+    el.querySelectorAll("button.redl").forEach(function (b) {
+      b.addEventListener("click", function () {
+        redownload(b.getAttribute("data-hash"));
+      });
+    });
+  }
+
+  function redownload(hash) {
+    if (!hash) return;
+    if (!confirm("Re-download this torrent? Any local copy is replaced.")) return;
+    fetch("api/redownload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hash: hash })
+    }).then(function () { tick(); }).catch(function () {});
   }
 
   function renderEvents(list) {
