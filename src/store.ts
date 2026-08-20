@@ -419,6 +419,20 @@ export class Store {
     return toOptionalText(row["path"]) ?? null;
   }
 
+  /** The newest recorded title for a hash, or null when it is not known. */
+  titleOf(hash: string): string | null {
+    const row = this.database
+      .prepare("SELECT title FROM history WHERE hash = ? ORDER BY id DESC LIMIT 1")
+      .get(hash);
+    if (row === undefined) return null;
+    return toOptionalText(row["title"]) ?? null;
+  }
+
+  /** Drop the "done" marker for a hash, so it counts as fresh again. */
+  async forget(hash: string): Promise<void> {
+    this.database.prepare("DELETE FROM done WHERE hash = ?").run(hash);
+  }
+
   /** The history, newest event first. */
   history(): HistoryEntry[] {
     const rows = this.database

@@ -228,12 +228,21 @@ user, the step is skipped and one line is logged.
 
 ### Cleaning up after an import
 
-When `REMOVE_AFTER_IMPORT` is on (the default) and the Radarr **On Import**
-webhook is enabled, the service deletes its local copy of a film once Radarr
-reports the import. The film is already in the library, so the staged copy only
-wastes disk. The service finds the copy by the infohash Radarr sends, so it
-never deletes a file it did not stage. **The seedbox is never touched.** Set
+When `REMOVE_AFTER_IMPORT` is on (the default) and the **On Import** webhook is
+enabled, the service deletes its local copy once Radarr or Sonarr reports the
+import. The film or the episode is already in the library, so the staged copy
+only wastes disk. The service finds the copy by the infohash the app sends, so
+it never deletes a file it did not stage. **The seedbox is never touched.** Set
 `REMOVE_AFTER_IMPORT` to `false` to keep every local copy.
+
+A season pack is one torrent but many files, and Sonarr imports the episodes one
+at a time — one **On Import** webhook each. So the service deletes only the one
+file that was just imported (it matches it by the size the webhook reports),
+never the whole pack while other episodes still wait. The folder itself is
+removed once no video file is left, which takes the samples and the subtitles
+with it. (A very old Radarr or Sonarr sends no size; then a pack file cannot be
+matched, so the folder is kept until it is empty of videos. Nothing is ever
+deleted by mistake.)
 
 ## The transfer mode
 
@@ -288,8 +297,14 @@ Each row in the queue has a **Remove** button. Use it when a torrent goes stale
 and needs a hand: it drops the job and its part files. The seedbox is not
 touched.
 
+Each finished row in the History tab has a **Redownload** button. Use it when a
+local copy was deleted (or came out broken) and the app needs it again: it
+clears any staged copy and part files and puts the whole torrent back in the
+queue for a clean fetch. The seedbox is not touched.
+
 The panel is one page with no framework. It reads the `/api` endpoints below,
-and the Remove button is its one write, a `POST /api/remove`.
+and it has three writes: the Remove button (`POST /api/remove`), the Redownload
+button (`POST /api/redownload`), and the Settings tab (`POST /api/settings`).
 
 ## The HTTP endpoints
 
@@ -299,6 +314,7 @@ and the Remove button is its one write, a `POST /api/remove`.
 | `POST /radarr` | The Radarr webhook (On Grab and On Import). |
 | `POST /sonarr` | The Sonarr webhook (On Grab and On Import). |
 | `POST /api/remove` | Take a torrent out of the queue. Body: `{"hash":"..."}`. |
+| `POST /api/redownload` | Queue a finished torrent again. Body: `{"hash":"..."}`. |
 | `GET /api/settings` | The chown and chmod preferences. |
 | `POST /api/settings` | Change them. Body: the fields to change. |
 | `GET /status` | The queue and the running download, as JSON. |

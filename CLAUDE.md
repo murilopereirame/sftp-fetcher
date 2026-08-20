@@ -114,10 +114,20 @@ pass. There is no linter in this project.
 - **The import cleanup deletes a local file, so it must be exact.** On the "On
   Import" webhook (`eventType: "Download"`), the service deletes its staged copy
   to free the disk. It finds the copy by the infohash: `store.donePath(hash)`
-  gives the path it recorded, and `removeLocal` deletes it — but only inside
-  `LOCAL_ROOT`, never a `..` escape, and never the root itself. **The seedbox is
-  never touched; only the local staged copy.** Gate it with
+  gives the path it recorded, and `files.removeImported` deletes it — but only
+  inside `LOCAL_ROOT`, never a `..` escape, and never the root itself. **The
+  seedbox is never touched; only the local staged copy.** Gate it with
   `REMOVE_AFTER_IMPORT`.
+- **A season pack is one torrent, many files, many imports.** Sonarr imports the
+  episodes one at a time and sends one "On Import" webhook each, all with the
+  same infohash. So `removeImported` must NOT delete the whole staged folder on
+  the first import — the episodes that still wait would be lost. It deletes only
+  the one imported file, matched by the size the webhook reports
+  (`movieFile.size` for Radarr, `episodeFile.size` for Sonarr — the import
+  copies the file byte for byte, so exactly one staged file has that size). If
+  none or two files share the size, it deletes nothing, so a wrong episode is
+  never lost. The folder itself goes only once no video file is left. A single
+  file (a movie, or a one-file torrent) is still deleted whole, as before.
 - **Radarr and Sonarr share one webhook handler.** They post to two paths
   (`WEBHOOK_PATH`, default `/radarr`, and `SONARR_WEBHOOK_PATH`, default
   `/sonarr`), but send the same events (Grab, Download, Test) with the infohash
@@ -138,8 +148,9 @@ pass. There is no linter in this project.
 - **The web panel is one template literal in `src/panel.ts`.** The client script
   inside it must never use a backtick or a `${`. Both end the template literal
   at build time. Build strings with `+`, and escape a browser-side `\u` as
-  `\\u`. The panel reads the `/api/*` endpoints, and it has two writes: the
-  **Remove** button (`POST /api/remove`) and the **Settings** tab
+  `\\u`. The panel reads the `/api/*` endpoints, and it has three writes: the
+  **Remove** button (`POST /api/remove`), the **Redownload** button in the
+  History tab (`POST /api/redownload`), and the **Settings** tab
   (`POST /api/settings`). The Settings tab loads once on open, never on the
   2-second tick, or the tick would wipe out what the user is typing.
 

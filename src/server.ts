@@ -12,7 +12,7 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { activity } from "./events.js";
-import { listFiles, removeIncomplete, removeLocal } from "./files.js";
+import { listFiles, removeImported, removeIncomplete, removeLocal } from "./files.js";
 import { errorText, log, short } from "./log.js";
 import { panelHtml } from "./panel.js";
 import { bytes, duration, getProgress, percent } from "./progress.js";
@@ -26,6 +26,10 @@ interface ArrWebhook {
   movie?: { title?: string };
   /** Sonarr sends this. */
   series?: { title?: string };
+  /** Radarr sends this on an import: the file it just imported. */
+  movieFile?: { size?: number };
+  /** Sonarr sends this on an import: the file it just imported. */
+  episodeFile?: { size?: number };
 }
 
 /** The best name for a job: the release, then the movie or the series. */
@@ -36,6 +40,16 @@ function webhookTitle(payload: ArrWebhook): string {
     payload.series?.title ??
     "unknown"
   );
+}
+
+/**
+ * The size of the file that was just imported, from the import webhook. Radarr
+ * puts it in `movieFile`, Sonarr in `episodeFile`. It matches the staged file
+ * that this program can delete. Undefined when the app is too old to send it.
+ */
+function importedSize(payload: ArrWebhook): number | undefined {
+  const size = payload.movieFile?.size ?? payload.episodeFile?.size;
+  return typeof size === "number" && size > 0 ? size : undefined;
 }
 
 /** Keep the hex characters only. A bad value cannot become a path. */
@@ -199,6 +213,12 @@ async function handle(
     return;
   }
 
+  // The panel sends this to fetch a finished torrent again.
+  if (request.method === "POST" && target === "/api/redownload") {
+    await handleRedownload(request, response, store);
+    return;
+  }
+
   // The panel sends this to change the chown and chmod preferences.
   if (request.method === "POST" && target === "/api/settings") {
     await handleSettings(request, response, store);
@@ -312,10 +332,55 @@ async function handleRemove(
 }
 
 /**
- * React to a Radarr or Sonarr import. Delete the local copy that this program
+ * Fetch a finished torrent again, on request from the panel. Any staged local
+ * copy and any part files are removed first, so the worker starts a clean
+ * download and the whole torrent (a whole season pack, not one episode) comes
+ * back. The done marker is dropped, so the torrent counts as fresh. The seedbox
+ * is not touched.
+ */
+async function handleRedownload(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  store: Store,
+): Promise<void> {
+  let body: { hash?: string };
+  try {
+    body = JSON.parse(await readBody(request)) as { hash?: string };
+  } catch {
+    reply(response, 400, "bad json");
+    return;
+  }
+
+  const hash = cleanHash(body.hash);
+  const title = hash === "" ? null : store.titleOf(hash);
+  if (title === null) {
+    reply(response, 404, JSON.stringify({ ok: false, reason: "this torrent is not known" }), "application/json");
+    return;
+  }
+
+  // Clear any staged copy and any part files, so the fetch starts clean.
+  const relative = store.donePath(hash);
+  if (relative !== null) await removeLocal(relative);
+  await removeIncomplete(hash);
+
+  // Forget that it finished, then put it back in the queue.
+  await store.forget(hash);
+  const now = Date.now();
+  await store.add({ hash, title, addedAt: now });
+  await store.record({ hash, title, status: "grabbed", at: now });
+  log(`${short(hash)}: Queued again for a re-download. Title: '${title}'.`);
+  reply(response, 200, JSON.stringify({ ok: true }), "application/json");
+}
+
+/**
+ * React to a Radarr or Sonarr import. Free the local copy that this program
  * staged, so the disk is free. The path comes from the store, by the infohash.
- * If the torrent is unknown, or the file is already gone, this does nothing.
  * The seedbox is never touched; only the local staged copy.
+ *
+ * A season pack is a folder, and each episode imports on its own webhook. Only
+ * the one imported file is deleted here (matched by its size), never the whole
+ * folder while other episodes still wait. The folder goes once nothing is left
+ * to import. See removeImported.
  */
 async function handleImport(payload: ArrWebhook, store: Store, source: string): Promise<void> {
   if (!config.removeAfterImport) return;
@@ -330,12 +395,25 @@ async function handleImport(payload: ArrWebhook, store: Store, source: string): 
   }
 
   const title = payload.movie?.title ?? payload.series?.title ?? relative;
-  const removed = await removeLocal(relative);
-  if (removed) {
-    log(`${short(hash)}: ${source} imported it. The local copy '${relative}' is deleted.`);
-    await store.record({ hash, title, status: "imported", at: Date.now(), path: relative });
-  } else {
-    log(`${short(hash)}: ${source} imported it. The local copy was gone already.`);
+  const result = await removeImported(relative, importedSize(payload));
+
+  switch (result.action) {
+    case "tree":
+      log(`${short(hash)}: ${source} imported it. The staged copy '${relative}' is deleted.`);
+      await store.record({ hash, title, status: "imported", at: Date.now(), path: relative });
+      break;
+    case "file":
+      if (result.removed !== null) {
+        log(`${short(hash)}: ${source} imported '${result.removed}'. It is deleted; the rest of the pack stays.`);
+        await store.record({ hash, title, status: "imported", at: Date.now(), path: result.removed });
+      }
+      break;
+    case "gone":
+      log(`${short(hash)}: ${source} imported it. The staged copy was gone already.`);
+      break;
+    case "kept":
+      log(`${short(hash)}: ${source} imported it, but the staged file could not be matched. It is kept.`);
+      break;
   }
 }
 
