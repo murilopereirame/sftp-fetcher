@@ -10,11 +10,16 @@
  *
  * The database is `node:sqlite`, a part of Node itself. It is not a new
  * dependency, so the two-dependency rule of this project still holds.
+ *
+ * On the first start after the upgrade, the old JSON files (queue.json,
+ * done.json, history.json) are read into the database once and then renamed
+ * to `*.imported`. See migrateFromJson below.
  */
 import { DatabaseSync } from "node:sqlite";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
+import { log } from "./log.js";
 
 export interface Job {
   hash: string;
@@ -110,6 +115,24 @@ function toOptionalNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Read and parse a JSON file. A missing or broken file gives null. */
+async function readJsonFile<T>(file: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Rename a file to `*.imported`. A missing file is fine. */
+async function archive(file: string): Promise<void> {
+  try {
+    await rename(file, `${file}.imported`);
+  } catch {
+    // The file was not there, or could not be renamed. Not fatal.
+  }
+}
+
 export class Store {
   private db: DatabaseSync | null = null;
 
@@ -151,6 +174,94 @@ export class Store {
       );
     `);
     this.seedSettings();
+    await this.migrateFromJson();
+  }
+
+  /**
+   * Bring the old JSON state into the database, once. Earlier versions kept
+   * three files in the state folder: queue.json, done.json, history.json.
+   * On the first start after the upgrade, read them, copy the rows in, and
+   * rename each file to `*.imported` so it is a backup and is not read again.
+   * A marker in the settings table makes this run only once.
+   */
+  private async migrateFromJson(): Promise<void> {
+    if (this.getSetting("jsonMigrated") === "1") return;
+
+    const dir = config.stateDir;
+    const queue = await readJsonFile<Job[]>(path.join(dir, "queue.json"));
+    const done = await readJsonFile<string[]>(path.join(dir, "done.json"));
+    const history = await readJsonFile<HistoryEntry[]>(path.join(dir, "history.json"));
+
+    const db = this.database;
+
+    // The old done.json is just a list of hashes, with no path. Take the path
+    // and the size from the newest "downloaded" event, so a later import can
+    // still find and delete the local copy.
+    const meta = new Map<string, DoneInfo>();
+    for (const entry of history ?? []) {
+      if (entry.status === "downloaded") {
+        const info: DoneInfo = {};
+        if (entry.path !== undefined) info.path = entry.path;
+        if (entry.bytes !== undefined) info.bytes = entry.bytes;
+        meta.set(entry.hash, info);
+      }
+    }
+
+    const insertQueue = db.prepare(
+      "INSERT OR IGNORE INTO queue (hash, title, added_at) VALUES (?, ?, ?)",
+    );
+    for (const job of queue ?? []) {
+      if (typeof job.hash !== "string" || job.hash === "") continue;
+      insertQueue.run(job.hash, job.title ?? "", job.addedAt ?? Date.now());
+    }
+
+    const insertDone = db.prepare(
+      "INSERT OR REPLACE INTO done (hash, path, bytes, done_at) VALUES (?, ?, ?, ?)",
+    );
+    const now = Date.now();
+    for (const hash of done ?? []) {
+      if (typeof hash !== "string" || hash === "") continue;
+      const info = meta.get(hash);
+      insertDone.run(hash, info?.path ?? null, info?.bytes ?? null, now);
+    }
+
+    const insertHistory = db.prepare(
+      "INSERT INTO history (hash, title, status, at, path, bytes) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    for (const entry of history ?? []) {
+      if (typeof entry.hash !== "string") continue;
+      insertHistory.run(
+        entry.hash,
+        entry.title ?? "",
+        entry.status,
+        entry.at ?? now,
+        entry.path ?? null,
+        entry.bytes ?? null,
+      );
+    }
+
+    // Keep the same caps the runtime uses, in case an old file was larger.
+    db.exec(
+      "DELETE FROM history WHERE id NOT IN " +
+        "(SELECT id FROM history ORDER BY id DESC LIMIT 1000)",
+    );
+    db.exec(
+      "DELETE FROM done WHERE hash NOT IN " +
+        "(SELECT hash FROM done ORDER BY done_at DESC LIMIT 1000)",
+    );
+
+    this.putSetting("jsonMigrated", "1");
+
+    if (queue !== null || done !== null || history !== null) {
+      log(
+        `Migrated the old JSON state: ${queue?.length ?? 0} queued, ` +
+          `${done?.length ?? 0} done, ${history?.length ?? 0} history event(s). ` +
+          `The old files are kept as *.imported.`,
+      );
+      await archive(path.join(dir, "queue.json"));
+      await archive(path.join(dir, "done.json"));
+      await archive(path.join(dir, "history.json"));
+    }
   }
 
   /**

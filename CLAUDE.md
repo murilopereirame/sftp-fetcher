@@ -105,6 +105,12 @@ pass. There is no linter in this project.
   Import" also arrives, as `eventType: "Download"`, but only *after* Radarr
   imports — too late to start anything. It is used only to clean up the local
   copy, see the next trap.)
+- **The JSON-to-SQLite migration runs once.** On the first start after the
+  upgrade, `store.migrateFromJson` reads the old `queue.json`, `done.json`, and
+  `history.json` into the tables, then renames each to `*.imported`. A
+  `jsonMigrated` marker in the `settings` table guards it, so it never runs
+  twice or on a fresh install. The old done list had no path, so each done row
+  takes its path from the newest matching "downloaded" history event.
 - **The import cleanup deletes a local file, so it must be exact.** On the "On
   Import" webhook (`eventType: "Download"`), the service deletes its staged copy
   to free the disk. It finds the copy by the infohash: `store.donePath(hash)`

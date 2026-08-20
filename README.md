@@ -409,6 +409,10 @@ docker pull ghcr.io/<owner>/<repository>:latest
 - The queue, the finished list, and the history are in a SQLite database at
   `state/fetcher.db`. A restart does not lose a job. (`node:sqlite` is a part
   of Node, so this is not a new dependency.)
+- On the first start after an upgrade from an older version, the old
+  `queue.json`, `done.json`, and `history.json` are read into the database
+  once and renamed to `*.imported`. Nothing is lost, and the rename means the
+  import runs only once. The `*.imported` files are a backup you can delete.
 - A stale job can be dropped by hand from the **Remove** button in the panel.
 - With the Radarr **On Import** webhook on, the local copy is deleted after the
   import, so the disk does not fill. The seedbox is never touched.
