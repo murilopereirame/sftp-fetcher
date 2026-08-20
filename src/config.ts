@@ -49,6 +49,20 @@ function trim(value: string): string {
 }
 
 /**
+ * A UID or a GID. Empty means "do not change the owner". A bad value is an
+ * error, so a typo does not pass silently.
+ */
+function id(name: string): number | null {
+  const value = process.env[name];
+  if (value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`The environment variable ${name} is not a whole number.`);
+  }
+  return parsed;
+}
+
+/**
  * Where the file data comes from.
  *
  *   "sftp"  the seedbox over SFTP. The old default. Simple, but slow.
@@ -165,6 +179,22 @@ export const config = {
   /** The download folder, as THIS container sees it. */
   localRoot: trim(optional("LOCAL_ROOT", "/downloads")),
   stateDir: trim(optional("STATE_DIR", "/state")),
+  /**
+   * The owner for the files this program puts on the local disk. Set PUID and
+   * PGID to the UID and the GID that Radarr runs as, and each finished file is
+   * chowned to them. Radarr can then import it with no permission error. Empty
+   * means "leave the owner as it is".
+   */
+  owner: {
+    uid: id("PUID"),
+    gid: id("PGID"),
+  },
+  /**
+   * Delete the local copy when Radarr sends its "On Import" webhook. The film
+   * is in the library by then, so the staged copy only wastes disk. The
+   * seedbox data is never touched. Set to false to keep the local copy.
+   */
+  removeAfterImport: boolean("REMOVE_AFTER_IMPORT", true),
   timing: {
     /** Seconds between two passes over the queue. */
     pollInterval: number("POLL_INTERVAL", 60),

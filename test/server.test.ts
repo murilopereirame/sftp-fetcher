@@ -1,7 +1,10 @@
 import "./setup.js";
 import assert from "node:assert/strict";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { after, before, test } from "node:test";
+import { config } from "../src/config.js";
 import { createServer } from "../src/server.js";
 import { Store } from "../src/store.js";
 
@@ -59,10 +62,58 @@ test("the test event changes nothing", async () => {
   assert.equal(store.jobs().length, before_);
 });
 
-test("an import event changes nothing", async () => {
+test("an import event for an unknown torrent changes nothing", async () => {
   const before_ = store.jobs().length;
   await post("/radarr", { eventType: "Download", downloadId: "2222222222" });
   assert.equal(store.jobs().length, before_);
+});
+
+test("the remove endpoint takes a torrent out of the queue", async () => {
+  const hash = "abcdef0123456789abcdef0123456789abcdef01";
+  await post("/radarr", {
+    eventType: "Grab",
+    downloadId: hash,
+    release: { releaseTitle: "Stale.Release" },
+  });
+  assert.ok(store.jobs().some((j) => j.hash === hash));
+
+  const response = await post("/api/remove", { hash });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, true);
+
+  assert.equal(store.jobs().some((j) => j.hash === hash), false);
+  assert.ok(
+    store.history().some((h) => h.hash === hash && h.status === "removed"),
+  );
+});
+
+test("removing a torrent that is not in the queue gives 404", async () => {
+  const response = await post("/api/remove", { hash: "1234567890abcdef" });
+  assert.equal(response.status, 404);
+});
+
+test("an import event deletes the staged local copy", async () => {
+  const hash = "ccddeeff00112233445566778899aabbccddeeff";
+  const relative = path.join("movies", "Imported.2024", "film.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "movie data");
+  // The worker would have recorded this. Set it up by hand for the test.
+  await store.markDone(hash, { path: relative });
+
+  // Radarr sends the infohash in upper case in the import webhook.
+  const response = await post("/radarr", {
+    eventType: "Download",
+    downloadId: hash.toUpperCase(),
+    movie: { title: "Imported" },
+  });
+  assert.equal(response.status, 200);
+
+  await assert.rejects(stat(full), "the staged file is deleted");
+  assert.ok(
+    store.history().some((h) => h.hash === hash && h.status === "imported"),
+  );
 });
 
 test("a grab without a downloadId changes nothing", async () => {
@@ -130,6 +181,47 @@ test("the api activity endpoint returns an array", async () => {
   const response = await fetch(`${base}/api/activity`);
   assert.equal(response.status, 200);
   assert.ok(Array.isArray(await response.json()));
+});
+
+test("the settings endpoint returns the modes as octal text", async () => {
+  const response = await fetch(`${base}/api/settings`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    chown: boolean;
+    chmod: boolean;
+    fileMode: string | null;
+    dirMode: string | null;
+  };
+  assert.equal(typeof body.chown, "boolean");
+  assert.equal(body.fileMode, "664");
+  assert.equal(body.dirMode, "775");
+});
+
+test("posting settings changes them", async () => {
+  const response = await post("/api/settings", {
+    chmod: true,
+    fileMode: "600",
+    uid: "1000",
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    ok: boolean;
+    settings: { chmod: boolean; fileMode: string; uid: number };
+  };
+  assert.equal(body.ok, true);
+  assert.equal(body.settings.chmod, true);
+  assert.equal(body.settings.fileMode, "600");
+  assert.equal(body.settings.uid, 1000);
+
+  // The store kept it.
+  assert.equal(store.settings().fileMode, 0o600);
+});
+
+test("a bad mode is refused with 400", async () => {
+  const response = await post("/api/settings", { fileMode: "999" });
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, false);
 });
 
 test("the health check still answers on its own path", async () => {

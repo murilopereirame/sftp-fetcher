@@ -29,4 +29,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD node -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "dist/index.js"]
+# node:sqlite is a built-in module. It is still marked experimental, so it
+# prints one warning at start. Silence just that warning; the rest still show.
+CMD ["node", "--disable-warning=ExperimentalWarning", "dist/index.js"]

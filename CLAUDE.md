@@ -29,7 +29,8 @@ src/fetcher.ts      picks the transport (sftp | p2f) from the mode
 src/sftp.ts         the SFTP download, with byte progress
 src/p2f.ts          the peer-to-file download (thin wrapper over p2f-lib)
 src/paths.ts        the path map between the four roots
-src/store.ts        the queue and the history on disk
+src/store.ts        the queue, the done list, the history, the settings (SQLite)
+src/permissions.ts  the chown and chmod of a finished file, from the settings
 src/progress.ts     the progress numbers and their form
 src/files.ts        the list of files on the local disk
 src/events.ts       the activity feed (last log lines), in memory
@@ -57,9 +58,11 @@ pass. There is no linter in this project.
   `any`. Do not use `!` to remove a null.
 - **Two dependencies, both purposeful.** `ssh2-sftp-client` for the SFTP mode,
   and `p2f-lib` (the extracted peer-to-file client, its own repo) for the p2f
-  mode. Do not add a framework, a test runner, or a helper library. The HTTP
-  server is `node:http`. The tests are `node:test`. `p2f-lib` is a git
-  dependency; keep the lockfile's `resolved` URL on `git+https` (npm's
+  mode. Do not add a framework, a test runner, a database driver, or a helper
+  library. The HTTP server is `node:http`. The tests are `node:test`. The
+  database is `node:sqlite` (built in; it prints one experimental warning, so
+  the start command passes `--disable-warning=ExperimentalWarning`). `p2f-lib`
+  is a git dependency; keep the lockfile's `resolved` URL on `git+https` (npm's
   `install` rewrites it to `git+ssh`, which breaks anonymous CI/Docker clones —
   `npm ci` never rewrites it).
 - **All settings come from the environment**, and only through `src/config.ts`.
@@ -96,9 +99,31 @@ pass. There is no linter in this project.
 - **qBittorrent 5.2.0 added API keys.** The header is
   `Authorization: Bearer qbt_...`. There is no login call and no cookie in that
   mode. The `password` mode is for older versions only.
-- **Radarr has no "time to import" event.** "On Grab" is the only usable hook.
-  It fires before the download starts, so this service must wait. Do not look
-  for a better event; there is none.
+- **Radarr has no "torrent is done" event.** "On Grab" is the only hook that
+  starts a job. It fires before the download starts, so this service must wait
+  and poll qBittorrent. Do not look for a better event; there is none. ("On
+  Import" also arrives, as `eventType: "Download"`, but only *after* Radarr
+  imports — too late to start anything. It is used only to clean up the local
+  copy, see the next trap.)
+- **The JSON-to-SQLite migration runs once.** On the first start after the
+  upgrade, `store.migrateFromJson` reads the old `queue.json`, `done.json`, and
+  `history.json` into the tables, then renames each to `*.imported`. A
+  `jsonMigrated` marker in the `settings` table guards it, so it never runs
+  twice or on a fresh install. The old done list had no path, so each done row
+  takes its path from the newest matching "downloaded" history event.
+- **The import cleanup deletes a local file, so it must be exact.** On the "On
+  Import" webhook (`eventType: "Download"`), the service deletes its staged copy
+  to free the disk. It finds the copy by the infohash: `store.donePath(hash)`
+  gives the path it recorded, and `removeLocal` deletes it — but only inside
+  `LOCAL_ROOT`, never a `..` escape, and never the root itself. **The seedbox is
+  never touched; only the local staged copy.** Gate it with
+  `REMOVE_AFTER_IMPORT`.
+- **The permissions run after the rename, from the DB settings.** The chown and
+  chmod of a finished file are preferences in the `settings` table, set from the
+  panel, not env-only. `PUID`/`PGID` only seed the chown on the first start. The
+  worker calls `applyPermissions(paths.local, store.settings())` after the move.
+  A chown needs root; it fails soft (one log line), because the file is already
+  safe on disk.
 - **The Radarr container cannot be changed.** No custom script goes inside it.
   That is the reason for the webhook.
 - **The progress callback fires thousands of times.** The log line is throttled
@@ -106,7 +131,10 @@ pass. There is no linter in this project.
 - **The web panel is one template literal in `src/panel.ts`.** The client script
   inside it must never use a backtick or a `${`. Both end the template literal
   at build time. Build strings with `+`, and escape a browser-side `\u` as
-  `\\u`. The panel reads only the `/api/*` endpoints; it writes nothing.
+  `\\u`. The panel reads the `/api/*` endpoints, and it has two writes: the
+  **Remove** button (`POST /api/remove`) and the **Settings** tab
+  (`POST /api/settings`). The Settings tab loads once on open, never on the
+  2-second tick, or the tick would wipe out what the user is typing.
 
 ## The test SFTP server
 
