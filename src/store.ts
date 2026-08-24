@@ -18,7 +18,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, type LogLevel } from "./config.js";
 import { log } from "./log.js";
 
 export interface Job {
@@ -26,6 +26,20 @@ export interface Job {
   title: string;
   /** The time of the Radarr webhook, in milliseconds. */
   addedAt: number;
+  /**
+   * "Radarr" or "Sonarr": which app's webhook queued it. Empty when it is not
+   * known (queued again from the Redownload button, or migrated from an
+   * older version). The periodic *arr-queue check (see arr.ts) skips a job
+   * with no source, since it would not know which app's queue to compare it
+   * against.
+   */
+  source: string;
+  /**
+   * When this job was found missing from its *arr's queue, in milliseconds,
+   * or null when it is not flagged. Set and cleared by
+   * Worker.checkArrQueues; never causes anything to be deleted on its own.
+   */
+  flaggedAt: number | null;
 }
 
 /**
@@ -85,6 +99,19 @@ export interface Settings {
   chmod: boolean;
   fileMode: number | null;
   dirMode: number | null;
+  /** "info" or "debug". See src/log.ts. */
+  logLevel: LogLevel;
+  /**
+   * Extra file extensions (with the dot, e.g. ".nfo") removed alongside the
+   * imported file itself. Empty means no extra cleanup, the old behaviour.
+   */
+  cleanupExtensions: string[];
+  /**
+   * Delete a season-pack folder once every video in it is imported (and any
+   * junk the extensions above do not cover is gone too). Off keeps the empty
+   * folder, for a person to clear out by hand from the Files tab.
+   */
+  removeEmptyFolders: boolean;
 }
 
 /** The mode when a new install has nothing set. A file, then a folder. */
@@ -173,8 +200,23 @@ export class Store {
         value TEXT NOT NULL
       );
     `);
+    this.ensureColumn("queue", "source", "TEXT");
+    this.ensureColumn("queue", "flagged_at", "INTEGER");
     this.seedSettings();
     await this.migrateFromJson();
+  }
+
+  /**
+   * Add a column to an existing table if it is not there yet. Used to grow
+   * the "queue" table for a version that added a field, without a JSON-style
+   * migration step: `PRAGMA table_info` is cheap, and this runs once per
+   * start. A fresh install already has the column, from `load()`'s own
+   * `CREATE TABLE`, so this is a no-op there.
+   */
+  private ensureColumn(table: string, column: string, type: string): void {
+    const columns = this.database.prepare(`PRAGMA table_info(${table})`).all();
+    const has = columns.some((row) => toText(row["name"]) === column);
+    if (!has) this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 
   /**
@@ -282,6 +324,9 @@ export class Store {
       chmod: false,
       fileMode: DEFAULT_FILE_MODE,
       dirMode: DEFAULT_DIR_MODE,
+      logLevel: config.logLevel,
+      cleanupExtensions: [],
+      removeEmptyFolders: true,
     });
   }
 
@@ -315,6 +360,13 @@ export class Store {
     return Number.isInteger(parsed) ? parsed : null;
   }
 
+  /** Parse the stored comma list of extensions. Empty means no extra cleanup. */
+  private extensionsSetting(): string[] {
+    const value = this.getSetting("cleanupExtensions");
+    if (value === null || value === "") return [];
+    return value.split(",").map((v) => v.trim()).filter((v) => v !== "");
+  }
+
   /** The current permission preferences. */
   settings(): Settings {
     return {
@@ -324,6 +376,9 @@ export class Store {
       chmod: this.getSetting("chmod") === "1",
       fileMode: this.modeSetting("fileMode"),
       dirMode: this.modeSetting("dirMode"),
+      logLevel: this.getSetting("logLevel") === "debug" ? "debug" : "info",
+      cleanupExtensions: this.extensionsSetting(),
+      removeEmptyFolders: this.getSetting("removeEmptyFolders") !== "0",
     };
   }
 
@@ -341,6 +396,9 @@ export class Store {
       "dirMode",
       s.dirMode === null ? "" : (s.dirMode & 0o7777).toString(8),
     );
+    this.putSetting("logLevel", s.logLevel);
+    this.putSetting("cleanupExtensions", s.cleanupExtensions.join(","));
+    this.putSetting("removeEmptyFolders", s.removeEmptyFolders ? "1" : "0");
   }
 
   /** Change some preferences and return the whole set after the change. */
@@ -360,12 +418,14 @@ export class Store {
 
   jobs(): Job[] {
     const rows = this.database
-      .prepare("SELECT hash, title, added_at FROM queue ORDER BY added_at ASC")
+      .prepare("SELECT hash, title, added_at, source, flagged_at FROM queue ORDER BY added_at ASC")
       .all();
     return rows.map((row) => ({
       hash: toText(row["hash"]),
       title: toText(row["title"]),
       addedAt: toNumber(row["added_at"]),
+      source: toText(row["source"]),
+      flaggedAt: toOptionalNumber(row["flagged_at"]) ?? null,
     }));
   }
 
@@ -380,16 +440,27 @@ export class Store {
     return inDone !== undefined;
   }
 
-  async add(job: Job): Promise<void> {
+  async add(job: { hash: string; title: string; addedAt: number; source?: string }): Promise<void> {
     this.database
       .prepare(
-        "INSERT OR IGNORE INTO queue (hash, title, added_at) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO queue (hash, title, added_at, source) VALUES (?, ?, ?, ?)",
       )
-      .run(job.hash, job.title, job.addedAt);
+      .run(job.hash, job.title, job.addedAt, job.source ?? "");
   }
 
   async remove(hash: string): Promise<void> {
     this.database.prepare("DELETE FROM queue WHERE hash = ?").run(hash);
+  }
+
+  /**
+   * Flag a queued job as missing from its *arr's queue (a non-null time), or
+   * clear the flag (null) once it is seen there again. See
+   * Worker.checkArrQueues. A no-op if the job already left the queue.
+   */
+  async setFlag(hash: string, flaggedAt: number | null): Promise<void> {
+    this.database
+      .prepare("UPDATE queue SET flagged_at = ? WHERE hash = ?")
+      .run(flaggedAt, hash);
   }
 
   /**

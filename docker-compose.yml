@@ -80,6 +80,17 @@ services:
       # The seedbox is never touched. Default true.
       # REMOVE_AFTER_IMPORT: "true"
 
+      # --- Flag a download Radarr/Sonarr no longer has queued (optional) ---
+      # With these set, the worker periodically asks Radarr's and/or Sonarr's
+      # own API whether it still lists a torrent this service is waiting on,
+      # and flags it in the panel (an "Untracked" tag) if not. Nothing is
+      # deleted because of a flag. Leave unset to skip this check entirely.
+      # RADARR_URL: "http://radarr:7878"
+      # RADARR_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # SONARR_URL: "http://sonarr:8989"
+      # SONARR_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # ARR_CHECK_INTERVAL: "300"
+
     volumes:
       # The same host folder that Radarr mounts as its download folder.
       # Host:      /mnt/MEDIA/downloads

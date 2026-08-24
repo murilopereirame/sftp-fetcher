@@ -25,6 +25,7 @@ src/app.ts          starts the HTTP server and the worker
 src/server.ts       POST /radarr, POST /sonarr, GET /, GET /status, GET /api/*, GET /health
 src/worker.ts       the loop: poll, download, move
 src/qbittorrent.ts  the Web API client (apikey | password | none)
+src/arr.ts          the Radarr/Sonarr API client, for the *arr-queue check
 src/fetcher.ts      picks the transport (sftp | p2f) from the mode
 src/sftp.ts         the SFTP download, with byte progress
 src/p2f.ts          the peer-to-file download (thin wrapper over p2f-lib)
@@ -105,6 +106,28 @@ pass. There is no linter in this project.
   Import" also arrives, as `eventType: "Download"`, but only *after* Radarr
   imports — too late to start anything. It is used only to clean up the local
   copy, see the next trap.)
+- **The *arr-queue check only ever flags; it never deletes or removes.**
+  `src/arr.ts`'s `ArrClient` pulls Radarr's/Sonarr's own `GET /api/v3/queue` —
+  the opposite direction from the webhook — so `Worker.checkArrQueues` can
+  notice when *arr forgot about a torrent this service is still waiting on
+  (removed by hand in the app, or imported outside this service) instead of
+  waiting out the full `MAX_WAIT_HOURS` in silence. `queueHashes()` returns
+  `null` on anything short of a confirmed, parsed 200 (not configured,
+  unreachable, a non-200 status, bad JSON): `checkArrQueues` must never flag a
+  job on a `null` result, only on a real "this hash is not in the list"
+  answer, or a network hiccup would flag every job in the queue at once. A job
+  needs its `source` (`"Radarr"` or `"Sonarr"`, set from the webhook that
+  queued it — see `store.add`) to know which app's queue to compare it
+  against; a job with no source (queued through the panel's Redownload button,
+  which does not know it) is skipped, never checked against the wrong app or
+  against both. A job younger than two minutes is also skipped, since *arr may
+  not have added it to its own queue view yet. The check itself is throttled
+  to once per `ARR_CHECK_INTERVAL` regardless of how often the worker's pass
+  loop runs (`POLL_INTERVAL` is usually far shorter). `Worker`'s constructor
+  takes the two clients as `ArrQueueSource` (an interface), not the concrete
+  `ArrClient` class — TypeScript compares classes with private fields
+  nominally, so a parameter typed as the class itself would refuse a test's
+  fake client even with an identical public shape.
 - **The JSON-to-SQLite migration runs once.** On the first start after the
   upgrade, `store.migrateFromJson` reads the old `queue.json`, `done.json`, and
   `history.json` into the tables, then renames each to `*.imported`. A
@@ -122,12 +145,34 @@ pass. There is no linter in this project.
   episodes one at a time and sends one "On Import" webhook each, all with the
   same infohash. So `removeImported` must NOT delete the whole staged folder on
   the first import — the episodes that still wait would be lost. It deletes only
-  the one imported file, matched by the size the webhook reports
-  (`movieFile.size` for Radarr, `episodeFile.size` for Sonarr — the import
-  copies the file byte for byte, so exactly one staged file has that size). If
-  none or two files share the size, it deletes nothing, so a wrong episode is
-  never lost. The folder itself goes only once no video file is left. A single
-  file (a movie, or a one-file torrent) is still deleted whole, as before.
+  the one imported file, matched first by the file name Radarr/Sonarr reports
+  (`movieFile.relativePath`/`.path` for Radarr, `episodeFile.relativePath`/
+  `.path` for Sonarr — a name never collides), and by the file size only as a
+  fallback for an app too old to send a path. Size alone is not reliable:
+  episodes of the same show are often encoded to the same bitrate, so two of
+  them can land on the exact same byte count, and matching by size then finds
+  neither. If neither the name nor the size matches exactly one staged file, it
+  deletes nothing, so a wrong episode is never lost. Two import webhooks for the
+  same pack can arrive within milliseconds of each other; `removeImported` runs
+  its cleanups one at a time (see the `serialized()` queue in `files.ts`), or a
+  second call could list the folder before the first one's delete lands and
+  misjudge whether a video is still left. The folder itself goes only once no
+  video file is left, and only when the `removeEmptyFolders` setting is on
+  (default on, the old fixed behaviour). The `cleanupExtensions` setting deletes
+  extra file types (an `.nfo`, a sample, a subtitle) alongside the imported file
+  on every import, not only the last one. A single file (a movie, or a
+  one-file torrent) is still deleted whole, as before.
+- **The log level lives in two places on purpose.** `LOG_LEVEL` seeds the
+  `settings` table on the first start (same pattern as `PUID`/`PGID` for
+  `chown`); after that, the panel's Settings tab is the source of truth, and it
+  takes effect immediately, no restart. `src/log.ts` cannot import `store.ts`
+  to read it live — `store.ts` already imports `log.ts` for its own log lines,
+  and a two-way import would be circular — so `log.ts` keeps the current level
+  in a module variable, and `app.ts` (on start) and `server.ts`'s
+  `handleSettings` (on a change) call `setLogLevel()` to keep it in sync.
+  `debug()` in `log.ts` is the debug-only line; `log()` always prints. The
+  webhook handler logs the raw Radarr/Sonarr body with `debug()` before it
+  parses the JSON, so a malformed body still shows up.
 - **Radarr and Sonarr share one webhook handler.** They post to two paths
   (`WEBHOOK_PATH`, default `/radarr`, and `SONARR_WEBHOOK_PATH`, default
   `/sonarr`), but send the same events (Grab, Download, Test) with the infohash
@@ -148,17 +193,26 @@ pass. There is no linter in this project.
 - **The web panel is one template literal in `src/panel.ts`.** The client script
   inside it must never use a backtick or a `${`. Both end the template literal
   at build time. Build strings with `+`, and escape a browser-side `\u` as
-  `\\u`. The panel reads the `/api/*` endpoints, and it has three writes: the
+  `\\u`. The panel reads the `/api/*` endpoints, and it has four writes: the
   **Remove** button (`POST /api/remove`), the **Redownload** button in the
-  History tab (`POST /api/redownload`), and the **Settings** tab
-  (`POST /api/settings`). The Settings tab loads once on open, never on the
-  2-second tick, or the tick would wipe out what the user is typing.
+  History tab (`POST /api/redownload`), the **Delete** button in the Files tab
+  (`POST /api/files/remove`), and the **Settings** tab (`POST /api/settings`).
+  The Settings tab loads once on open, never on the 2-second tick, or the tick
+  would wipe out what the user is typing.
 
 ## The test SFTP server
 
 `sftp-test-server.mjs` gives a real SFTP server on port 2222, for the user
 `torrent` and the password `secret`. It serves `/tmp/seedbox`. Use it for an
 end-to-end test with no seedbox. The README shows the commands.
+
+## Continuous integration
+
+`.github/workflows/test.yml` runs `npm run typecheck` and `npm test` on every
+pull request, and on a direct push to `main` (not on every branch — a branch
+with an open pull request would otherwise run this workflow twice for the
+same commit). It builds and pushes nothing; it exists purely so a change gets
+fast feedback without waiting on a release.
 
 ## The image
 

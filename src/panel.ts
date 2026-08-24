@@ -5,66 +5,175 @@
  * page is a plain string with its own CSS and its own script. The script asks
  * the "/api" endpoints every few seconds and draws the result.
  *
- * The panel has four tabs, like Sonarr and Radarr:
+ * The panel has five tabs, like Sonarr and Radarr:
  *   Activity   the running download and the queue
  *   Files      the files that this program put on the local disk
  *   History    every event: grabbed, downloaded, failed
  *   Events     the last log lines
+ *   Settings   the chown/chmod, cleanup, and log-level preferences
+ *
+ * The look follows Material 3: the color roles (surface, primary, the
+ * "container" tone for each status), the pill-shaped filled and tonal
+ * buttons, and the shape/elevation scale. It ships as plain CSS custom
+ * properties, not a framework: a light and a dark token set live on
+ * :root/[data-theme], so the page follows the browser's preference by
+ * default, with a manual toggle (top right) that overrides it and is
+ * remembered in localStorage.
  *
  * The client script uses "+" to build strings, never a backtick and never a
- * dollar-brace. Those would break this template literal at build time.
+ * dollar-brace. Those would break this template literal at build time. Any
+ * symbol (an em dash, an ellipsis) is written as an HTML numeric entity in
+ * markup, or a "\\u" escape inside a JS string, for the same reason: this
+ * whole file is itself one template literal, so a stray backtick anywhere in
+ * it — even in a CSS value or a comment — would end the file early.
+ *
+ * No emoji: every icon (the brand mark, the empty states, the theme toggle)
+ * is a small hand-drawn inline SVG, colored with currentColor or the
+ * accent/on-accent CSS variables so it follows the active theme.
  */
 export const panelHtml = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sftp-fetcher</title>
+<title>Fetcher</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='12' fill='rgb(0,97,164)'/><path d='M24 11v16' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/><path d='M16 21l8 8 8-8' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' fill='none'/><path d='M13 36h22' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/></svg>">
 <style>
+  /* Material 3 baseline color roles, light theme (the default). */
   :root {
-    --bg: #14161b;
-    --panel: #1c1f26;
-    --panel2: #232833;
-    --line: #2c313c;
-    --text: #e6e9ef;
-    --muted: #9aa3b2;
-    --accent: #3b82f6;
-    --green: #22c55e;
-    --red: #ef4444;
-    --amber: #f59e0b;
+    --bg: #fffbfe;
+    --panel: #f3edf7;
+    --panel2: #ece6f0;
+    --line: #cac4d0;
+    --outline: #79747e;
+    --text: #1d1b20;
+    --muted: #49454f;
+    --accent: #0061a4;
+    --on-accent: #ffffff;
+    --accent-container: #d1e4ff;
+    --on-accent-container: #001d36;
+    --tertiary: #7d5260;
+    --tertiary-container: #ffd8e4;
+    --green: #2e7d32;
+    --green-container: #c8e6c9;
+    --red: #b3261e;
+    --red-container: #f9dedc;
+    --amber: #7a5900;
+    --amber-container: #ffdea6;
+    --ring: rgba(0, 97, 164, .18);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 1px 3px rgba(0, 0, 0, .1);
+  }
+  /* The dark set, by system preference... */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141218;
+      --panel: #211f26;
+      --panel2: #2b2930;
+      --line: #49454f;
+      --outline: #938f99;
+      --text: #e6e0e9;
+      --muted: #cac4d0;
+      --accent: #9ecaff;
+      --on-accent: #003258;
+      --accent-container: #00497d;
+      --on-accent-container: #d1e4ff;
+      --tertiary: #efb8c8;
+      --tertiary-container: #633b48;
+      --green: #a5d6a7;
+      --green-container: #1b5e20;
+      --red: #f2b8b5;
+      --red-container: #8c1d18;
+      --amber: #ffd599;
+      --amber-container: #5c4200;
+      --ring: rgba(158, 202, 255, .22);
+      --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
+    }
+  }
+  /* ...or by the header toggle, which always wins over the system setting. */
+  :root[data-theme="dark"] {
+    --bg: #141218;
+    --panel: #211f26;
+    --panel2: #2b2930;
+    --line: #49454f;
+    --outline: #938f99;
+    --text: #e6e0e9;
+    --muted: #cac4d0;
+    --accent: #9ecaff;
+    --on-accent: #003258;
+    --accent-container: #00497d;
+    --on-accent-container: #d1e4ff;
+    --tertiary: #efb8c8;
+    --tertiary-container: #633b48;
+    --green: #a5d6a7;
+    --green-container: #1b5e20;
+    --red: #f2b8b5;
+    --red-container: #8c1d18;
+    --amber: #ffd599;
+    --amber-container: #5c4200;
+    --ring: rgba(158, 202, 255, .22);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
   }
   * { box-sizing: border-box; }
+  * { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font: 14px/1.5 Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   header {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 14px 20px;
-    background: var(--panel);
+    background: var(--bg);
     border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow);
     position: sticky;
     top: 0;
     z-index: 5;
   }
-  header .logo { font-weight: 700; font-size: 16px; letter-spacing: .2px; }
+  header .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; letter-spacing: .1px; }
+  .logo-mark { flex: none; display: block; }
+  .logo-mark rect { fill: var(--accent); }
+  .logo-mark path { stroke: var(--on-accent); }
   header .sub { color: var(--muted); font-size: 12px; }
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-size: 16px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s ease;
+  }
+  .icon-btn:hover { background: var(--panel2); }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-  .dot.live { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+  .dot.live { background: var(--green); animation: pulse 1.8s ease-in-out infinite; }
   .dot.idle { background: var(--muted); }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--ring); }
+    50% { box-shadow: 0 0 0 5px var(--ring); }
+  }
   .spacer { flex: 1; }
   nav {
     display: flex;
     gap: 4px;
     padding: 0 12px;
-    background: var(--panel);
+    background: var(--bg);
     border-bottom: 1px solid var(--line);
+    overflow-x: auto;
     position: sticky;
-    top: 51px;
+    top: 63px;
     z-index: 4;
   }
   nav button {
@@ -73,11 +182,15 @@ export const panelHtml = `<!doctype html>
     color: var(--muted);
     padding: 12px 16px;
     font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
     cursor: pointer;
-    border-bottom: 2px solid transparent;
+    border-radius: 8px 8px 0 0;
+    border-bottom: 3px solid transparent;
+    transition: background .15s ease, color .15s ease;
   }
-  nav button:hover { color: var(--text); }
-  nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+  nav button:hover { color: var(--text); background: var(--panel2); }
+  nav button.on { color: var(--accent); background: var(--panel2); border-bottom-color: var(--accent); }
   nav .count {
     display: inline-block;
     min-width: 18px;
@@ -89,98 +202,132 @@ export const panelHtml = `<!doctype html>
     font-size: 11px;
     text-align: center;
   }
+  nav button.on .count { background: var(--accent-container); color: var(--on-accent-container); }
   main { padding: 20px; max-width: 1100px; margin: 0 auto; }
   .tab { display: none; }
   .tab.on { display: block; }
   .card {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 16px;
+    border-radius: 16px;
+    padding: 20px;
     margin-bottom: 16px;
+    box-shadow: var(--shadow);
   }
-  .card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-  .bar { height: 10px; border-radius: 6px; background: var(--panel2); overflow: hidden; }
-  .bar > span { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .bar { height: 8px; border-radius: 999px; background: var(--panel2); overflow: hidden; }
+  .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width .3s ease; }
   .dl-title { font-weight: 600; margin-bottom: 2px; }
   .dl-name { color: var(--muted); font-size: 12px; margin-bottom: 12px; word-break: break-all; }
   .dl-meta { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; font-size: 13px; }
   .dl-meta b { display: block; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
   th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
   tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background .1s ease; }
+  tbody tr:hover { background: var(--panel2); }
   td.num { text-align: right; white-space: nowrap; color: var(--muted); }
   .table-wrap { overflow-x: auto; }
   .path { word-break: break-all; }
   .tag {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border-radius: 20px;
     font-size: 11px;
     font-weight: 600;
     text-transform: capitalize;
   }
-  .tag.grabbed { background: rgba(59,130,246,.16); color: #93c5fd; }
-  .tag.downloaded { background: rgba(34,197,94,.16); color: #86efac; }
-  .tag.failed { background: rgba(239,68,68,.16); color: #fca5a5; }
-  .tag.expired { background: rgba(245,158,11,.16); color: #fcd34d; }
-  .tag.removed { background: rgba(154,163,178,.16); color: #cbd5e1; }
-  .tag.imported { background: rgba(139,92,246,.16); color: #c4b5fd; }
+  .tag.grabbed { background: var(--accent-container); color: var(--on-accent-container); }
+  .tag.downloaded { background: var(--green-container); color: var(--green); }
+  .tag.failed { background: var(--red-container); color: var(--red); }
+  .tag.expired { background: var(--amber-container); color: var(--amber); }
+  .tag.removed { background: var(--panel2); color: var(--muted); }
+  .tag.imported { background: var(--tertiary-container); color: var(--tertiary); }
   button.rm {
-    background: var(--panel2);
+    background: transparent;
     border: 1px solid var(--line);
     color: var(--muted);
-    padding: 4px 10px;
-    border-radius: 6px;
+    padding: 6px 14px;
+    border-radius: 999px;
     font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
   }
-  button.rm:hover { color: var(--red); border-color: var(--red); }
-  button.rm.redl:hover { color: var(--green); border-color: var(--green); }
+  button.rm:hover { background: var(--red-container); color: var(--red); border-color: transparent; }
+  button.rm.redl:hover { background: var(--green-container); color: var(--green); border-color: transparent; }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 640px; }
   .form { display: flex; flex-direction: column; gap: 14px; max-width: 420px; }
   .form label { color: var(--text); font-size: 13px; }
+  .form > label:not(.check) { display: flex; flex-direction: column; gap: 6px; }
   .form .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .form .pair { display: flex; gap: 12px; }
   .form .pair label { flex: 1; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
-  .form input[type=text] {
+  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .form input[type=text], .form select {
     background: var(--panel2);
     border: 1px solid var(--line);
     color: var(--text);
-    padding: 8px 10px;
-    border-radius: 6px;
+    padding: 10px 12px;
+    border-radius: 8px;
     font-size: 14px;
   }
-  .form input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .form input[type=text]:focus, .form select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
   .form .actions { display: flex; align-items: center; gap: 12px; }
   button.save {
     background: var(--accent);
     border: none;
-    color: #fff;
-    padding: 8px 18px;
-    border-radius: 6px;
+    color: var(--on-accent);
+    padding: 10px 24px;
+    border-radius: 999px;
     font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: filter .15s ease, transform .05s ease;
   }
-  button.save:hover { filter: brightness(1.1); }
+  button.save:hover { filter: brightness(1.08); }
+  button.save:active { transform: scale(.98); }
   .form .msg { font-size: 13px; }
   .form .msg.ok { color: var(--green); }
   .form .msg.err { color: var(--red); }
-  .empty { color: var(--muted); padding: 24px 4px; text-align: center; }
+  .empty { color: var(--muted); padding: 44px 16px; text-align: center; font-size: 13px; }
+  .empty-icon { display: block; margin: 0 auto 10px; opacity: .45; }
   .events { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-  .events .row { display: flex; gap: 12px; padding: 5px 2px; border-bottom: 1px solid var(--line); }
+  .events .row { display: flex; gap: 12px; padding: 6px 4px; border-radius: 6px; border-bottom: 1px solid var(--line); }
+  .events .row:hover { background: var(--panel2); }
   .events .row:last-child { border-bottom: none; }
   .events .ts { color: var(--muted); white-space: nowrap; }
   .events .msg { word-break: break-word; }
+  @media (max-width: 640px) {
+    header { padding: 10px 14px; gap: 8px; }
+    header .sub { display: none; }
+    main { padding: 12px; }
+    nav { top: 59px; }
+    nav button { padding: 10px 12px; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <span class="logo">sftp-fetcher</span>
+  <span class="logo">
+    <svg class="logo-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+      <rect width="24" height="24" rx="6"></rect>
+      <path d="M12 6v9" fill="none" stroke-width="2" stroke-linecap="round"></path>
+      <path d="M8 11.5 12 15.5 16 11.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="M7 18h10" fill="none" stroke-width="2" stroke-linecap="round"></path>
+    </svg>
+    Fetcher
+  </span>
   <span class="sub">seedbox &rarr; Radarr</span>
   <span id="mode" class="sub"></span>
   <span class="spacer"></span>
+  <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle theme"></button>
   <span id="dot" class="dot idle"></span>
   <span id="state" class="sub">idle</span>
 </header>
@@ -193,28 +340,30 @@ export const panelHtml = `<!doctype html>
 </nav>
 <main>
   <section id="tab-activity" class="tab on">
-    <div id="download"></div>
+    <div id="download">
+      <div class="card"><h2>Downloading</h2><div class="empty">Loading&#8230;</div></div>
+    </div>
     <div class="card">
       <h2>Queue</h2>
-      <div id="queue"></div>
+      <div id="queue"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-files" class="tab">
     <div class="card">
       <h2>Available files</h2>
-      <div id="files"></div>
+      <div id="files"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-history" class="tab">
     <div class="card">
       <h2>History</h2>
-      <div id="history"></div>
+      <div id="history"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-events" class="tab">
     <div class="card">
       <h2>Events</h2>
-      <div id="events" class="events"></div>
+      <div id="events" class="events"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-settings" class="tab">
@@ -234,6 +383,32 @@ export const panelHtml = `<!doctype html>
           <label>File mode<input type="text" id="set-filemode" inputmode="numeric" placeholder="e.g. 664"></label>
           <label>Folder mode<input type="text" id="set-dirmode" inputmode="numeric" placeholder="e.g. 775"></label>
         </div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Cleanup after an import</h2>
+      <p class="hint">When Radarr or Sonarr reports an import, the staged copy
+      it just imported is deleted. These settings control the rest of the
+      cleanup around it.</p>
+      <div class="form">
+        <label>Also delete these file types<input type="text" id="set-extensions" placeholder="e.g. .nfo, .txt, .srt, .jpg"></label>
+        <p class="hint">Removed alongside the imported file itself, which is
+        always deleted.</p>
+        <label class="check"><input type="checkbox" id="set-emptydirs"> Delete a season-pack folder once every episode in it is imported</label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Logging</h2>
+      <div class="form">
+        <label>Log level
+          <select id="set-loglevel">
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+          </select>
+        </label>
+        <p class="hint">Debug also logs the raw Radarr and Sonarr webhook
+        body, as it is received. Useful when a webhook does not behave as
+        expected.</p>
         <div class="actions">
           <button id="set-save" class="save">Save</button>
           <span id="set-msg" class="msg"></span>
@@ -279,6 +454,56 @@ export const panelHtml = `<!doctype html>
       return r.json();
     });
   }
+
+  // The one brand glyph (an arrow fetching down into a tray), reused as the
+  // "nothing here yet" mark in every empty state. No emoji anywhere in the
+  // panel: every icon is this hand-drawn inline SVG, colored via currentColor
+  // so it follows the surrounding text color in both themes.
+  var emptyIcon = '<svg class="empty-icon" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true">' +
+    '<path d="M12 4v11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M5 19h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+    '</svg>';
+  var sunIcon = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/>' +
+    '<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+    '</svg>';
+  var moonIcon = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+    '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>';
+
+  // The theme toggle. It follows the browser's preference by default; the
+  // button overrides that and the choice is remembered per browser. The CSS
+  // reacts to the "data-theme" attribute on <html> (see :root[data-theme]).
+  var root = document.documentElement;
+  var themeBtn = document.getElementById("theme-toggle");
+  function systemIsDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  function isDarkNow() {
+    var mode = root.getAttribute("data-theme");
+    if (mode === "dark") return true;
+    if (mode === "light") return false;
+    return systemIsDark();
+  }
+  function paintThemeIcon() {
+    var dark = isDarkNow();
+    // Sun when dark is active (press it to go light), moon when light is
+    // active (press it to go dark): the icon shown is the mode a click gives.
+    themeBtn.innerHTML = dark ? sunIcon : moonIcon;
+    themeBtn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  }
+  try {
+    var savedTheme = localStorage.getItem("theme");
+    if (savedTheme === "light" || savedTheme === "dark") root.setAttribute("data-theme", savedTheme);
+  } catch (e) {}
+  paintThemeIcon();
+  themeBtn.addEventListener("click", function () {
+    var next = isDarkNow() ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("theme", next); } catch (e) {}
+    paintThemeIcon();
+  });
 
   var current = "activity";
   var buttons = document.querySelectorAll("nav button");
@@ -329,16 +554,19 @@ export const panelHtml = `<!doctype html>
     } else {
       dot.className = "dot idle";
       state.textContent = "idle";
-      box.innerHTML = '<div class="card"><h2>Downloading</h2><div class="empty">Nothing is downloading right now.</div></div>';
+      box.innerHTML = '<div class="card"><h2>Downloading</h2><div class="empty">' + emptyIcon + 'Nothing is downloading right now.</div></div>';
     }
 
     var q = document.getElementById("queue");
     if (!s.queue.length) {
-      q.innerHTML = '<div class="empty">The queue is empty.</div>';
+      q.innerHTML = '<div class="empty">' + emptyIcon + 'The queue is empty.</div>';
       return;
     }
     var rows = s.queue.map(function (j) {
-      return '<tr><td>' + esc(j.title) + '</td>' +
+      var flag = j.flagged
+        ? ' <span class="tag failed" title="Not in the Radarr/Sonarr queue that grabbed it. It may have been removed by hand, or imported outside this service.">Untracked</span>'
+        : '';
+      return '<tr><td>' + esc(j.title) + flag + '</td>' +
         '<td class="num">' + esc(j.hash.slice(0, 8)) + '</td>' +
         '<td class="num">' + rel(Date.parse(j.waitingSince)) + '</td>' +
         '<td class="num"><button class="rm" data-hash="' + esc(j.hash) + '">Remove</button></td></tr>';
@@ -367,18 +595,34 @@ export const panelHtml = `<!doctype html>
     document.getElementById("c-files").textContent = data.files.length;
     var el = document.getElementById("files");
     if (!data.files.length) {
-      el.innerHTML = '<div class="empty">No files on the local disk yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No files on the local disk yet.</div>';
       return;
     }
     var rows = data.files.map(function (f) {
       return '<tr><td class="path">' + esc(f.path) + '</td>' +
         '<td class="num">' + fmtBytes(f.bytes) + '</td>' +
-        '<td class="num">' + rel(f.modifiedAt) + '</td></tr>';
+        '<td class="num">' + rel(f.modifiedAt) + '</td>' +
+        '<td class="num"><button class="rm" data-path="' + esc(f.path) + '">Delete</button></td></tr>';
     }).join("");
     el.innerHTML =
       '<div class="table-wrap"><table><thead><tr><th>Path (' + esc(data.root) +
-      ')</th><th>Size</th><th>Modified</th></tr></thead><tbody>' + rows +
+      ')</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>' + rows +
       '</tbody></table></div>';
+    el.querySelectorAll("button.rm").forEach(function (b) {
+      b.addEventListener("click", function () {
+        deleteFile(b.getAttribute("data-path"));
+      });
+    });
+  }
+
+  function deleteFile(path) {
+    if (!path) return;
+    if (!confirm("Delete '" + path + "' from the local disk? This cannot be undone.")) return;
+    fetch("api/files/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path })
+    }).then(function () { refreshTab(); }).catch(function () {});
   }
 
   // The events that a torrent can be re-downloaded from. A "grabbed" event is
@@ -389,7 +633,7 @@ export const panelHtml = `<!doctype html>
     document.getElementById("c-history").textContent = list.length;
     var el = document.getElementById("history");
     if (!list.length) {
-      el.innerHTML = '<div class="empty">No history yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No history yet.</div>';
       return;
     }
     var rows = list.map(function (h) {
@@ -428,7 +672,7 @@ export const panelHtml = `<!doctype html>
   function renderEvents(list) {
     var el = document.getElementById("events");
     if (!list.length) {
-      el.innerHTML = '<div class="empty">No log lines yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No log lines yet.</div>';
       return;
     }
     el.innerHTML = list.map(function (e) {
@@ -444,6 +688,9 @@ export const panelHtml = `<!doctype html>
     document.getElementById("set-chmod").checked = !!s.chmod;
     document.getElementById("set-filemode").value = s.fileMode === null || s.fileMode === undefined ? "" : s.fileMode;
     document.getElementById("set-dirmode").value = s.dirMode === null || s.dirMode === undefined ? "" : s.dirMode;
+    document.getElementById("set-extensions").value = s.cleanupExtensions || "";
+    document.getElementById("set-emptydirs").checked = !!s.removeEmptyFolders;
+    document.getElementById("set-loglevel").value = s.logLevel === "debug" ? "debug" : "info";
   }
 
   function loadSettings() {
@@ -463,7 +710,10 @@ export const panelHtml = `<!doctype html>
       gid: document.getElementById("set-gid").value.trim(),
       chmod: document.getElementById("set-chmod").checked,
       fileMode: document.getElementById("set-filemode").value.trim(),
-      dirMode: document.getElementById("set-dirmode").value.trim()
+      dirMode: document.getElementById("set-dirmode").value.trim(),
+      cleanupExtensions: document.getElementById("set-extensions").value.trim(),
+      removeEmptyFolders: document.getElementById("set-emptydirs").checked,
+      logLevel: document.getElementById("set-loglevel").value
     };
     setMsg("Saving\\u2026", "");
     fetch("api/settings", {

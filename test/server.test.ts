@@ -44,6 +44,8 @@ test("a grab event puts the torrent in the queue", async () => {
   const job = store.jobs().find((item) => item.hash === hash.toLowerCase());
   assert.ok(job, "the job is in the queue");
   assert.equal(job.title, "Film.2024.1080p");
+  // The source is recorded, so the *arr-queue check knows which app to ask.
+  assert.equal(job.source, "Radarr");
 });
 
 test("the same grab twice makes one job only", async () => {
@@ -233,9 +235,30 @@ test("the status endpoint shows the queue", async () => {
   const response = await fetch(`${base}/status`);
   assert.equal(response.status, 200);
 
-  const body = (await response.json()) as { queue: unknown[]; download: unknown };
+  const body = (await response.json()) as {
+    queue: { hash: string; flagged: boolean }[];
+    download: unknown;
+  };
   assert.ok(Array.isArray(body.queue));
   assert.equal(body.download, null);
+  // Every queue row reports whether the *arr-queue check flagged it.
+  assert.ok(body.queue.every((j) => typeof j.flagged === "boolean"));
+});
+
+test("a flagged job is reported by both status endpoints", async () => {
+  const hash = "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00";
+  await post("/radarr", { eventType: "Grab", downloadId: hash, release: { releaseTitle: "Flagged.Film" } });
+  await store.setFlag(hash, Date.now());
+
+  const status = (await (await fetch(`${base}/status`)).json()) as {
+    queue: { hash: string; flagged: boolean }[];
+  };
+  assert.equal(status.queue.find((j) => j.hash === hash)?.flagged, true);
+
+  const apiStatus = (await (await fetch(`${base}/api/status`)).json()) as {
+    queue: { hash: string; flagged: boolean }[];
+  };
+  assert.equal(apiStatus.queue.find((j) => j.hash === hash)?.flagged, true);
 });
 
 test("the root path serves the web panel", async () => {
@@ -243,7 +266,7 @@ test("the root path serves the web panel", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /text\/html/);
   const text = await response.text();
-  assert.match(text, /<title>sftp-fetcher<\/title>/);
+  assert.match(text, /<title>Fetcher<\/title>/);
 });
 
 test("the api status endpoint has raw numbers and counts", async () => {
@@ -287,10 +310,16 @@ test("the settings endpoint returns the modes as octal text", async () => {
     chmod: boolean;
     fileMode: string | null;
     dirMode: string | null;
+    logLevel: string;
+    cleanupExtensions: string;
+    removeEmptyFolders: boolean;
   };
   assert.equal(typeof body.chown, "boolean");
   assert.equal(body.fileMode, "664");
   assert.equal(body.dirMode, "775");
+  assert.equal(body.logLevel, "info");
+  assert.equal(body.cleanupExtensions, "");
+  assert.equal(body.removeEmptyFolders, true);
 });
 
 test("posting settings changes them", async () => {
@@ -298,19 +327,31 @@ test("posting settings changes them", async () => {
     chmod: true,
     fileMode: "600",
     uid: "1000",
+    cleanupExtensions: ".nfo, txt",
+    removeEmptyFolders: false,
   });
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
     ok: boolean;
-    settings: { chmod: boolean; fileMode: string; uid: number };
+    settings: {
+      chmod: boolean;
+      fileMode: string;
+      uid: number;
+      cleanupExtensions: string;
+      removeEmptyFolders: boolean;
+    };
   };
   assert.equal(body.ok, true);
   assert.equal(body.settings.chmod, true);
   assert.equal(body.settings.fileMode, "600");
   assert.equal(body.settings.uid, 1000);
+  // A bare word without a dot gets one; a mixed comma/space list is parsed.
+  assert.equal(body.settings.cleanupExtensions, ".nfo, .txt");
+  assert.equal(body.settings.removeEmptyFolders, false);
 
   // The store kept it.
   assert.equal(store.settings().fileMode, 0o600);
+  assert.deepEqual(store.settings().cleanupExtensions, [".nfo", ".txt"]);
 });
 
 test("a bad mode is refused with 400", async () => {
@@ -318,6 +359,53 @@ test("a bad mode is refused with 400", async () => {
   assert.equal(response.status, 400);
   const body = (await response.json()) as { ok: boolean };
   assert.equal(body.ok, false);
+});
+
+test("a bad log level is refused with 400", async () => {
+  const response = await post("/api/settings", { logLevel: "verbose" });
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, false);
+});
+
+test("turning on debug logging logs the raw webhook body", async () => {
+  const set = await post("/api/settings", { logLevel: "debug" });
+  assert.equal(set.status, 200);
+
+  await post("/radarr", { eventType: "Test" });
+
+  const events = (await (await fetch(`${base}/api/activity`)).json()) as {
+    message: string;
+  }[];
+  assert.ok(
+    events.some((e) => e.message.startsWith("DEBUG: Radarr webhook received:")),
+  );
+
+  // Back to normal, so it does not spill into later test files.
+  await post("/api/settings", { logLevel: "info" });
+});
+
+test("the files endpoint deletes a file from the local disk", async () => {
+  const relative = path.join("movies", "Panel.Delete", "film.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "movie data");
+
+  const response = await post("/api/files/remove", { path: relative });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, true);
+  await assert.rejects(stat(full));
+});
+
+test("deleting a file that is not there gives 404", async () => {
+  const response = await post("/api/files/remove", { path: "movies/Gone.mkv" });
+  assert.equal(response.status, 404);
+});
+
+test("deleting a path that escapes the root is refused", async () => {
+  const response = await post("/api/files/remove", { path: "../escape.txt" });
+  assert.equal(response.status, 404);
 });
 
 test("the health check still answers on its own path", async () => {

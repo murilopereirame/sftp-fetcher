@@ -183,6 +183,7 @@ the film. If not, Radarr copies it a second time.
 | `PUID` | — | Chown each finished file to this UID. See below. |
 | `PGID` | — | Chown each finished file to this GID. See below. |
 | `REMOVE_AFTER_IMPORT` | `true` | Delete the local copy on the Radarr or Sonarr import webhook. |
+| `LOG_LEVEL` | `info` | `info` or `debug`. Seeds the panel's Settings tab on the first start only; change it there afterwards, no restart needed. |
 | `LISTEN_PORT` | `8080` | The webhook port. |
 | `WEBHOOK_PATH` | `/radarr` | The Radarr webhook path. |
 | `SONARR_WEBHOOK_PATH` | `/sonarr` | The Sonarr webhook path. |
@@ -191,6 +192,11 @@ the film. If not, Radarr copies it a second time.
 | `COPY_TRIES` | `3` | Attempts for one download. |
 | `COPY_WAIT` | `60` | Seconds between two attempts. |
 | `PROGRESS_INTERVAL` | `15` | Seconds between two progress lines. |
+| `RADARR_URL` | — | Radarr's own address, e.g. `http://radarr:7878`. Optional; see [Flagging an untracked download](#flagging-an-untracked-download). |
+| `RADARR_API_KEY` | — | Radarr's API key. **Settings > General > Security**. |
+| `SONARR_URL` | — | Sonarr's own address, e.g. `http://sonarr:8989`. Optional, same as above. |
+| `SONARR_API_KEY` | — | Sonarr's API key. **Settings > General > Security**. |
+| `ARR_CHECK_INTERVAL` | `300` | Seconds between two checks of the Radarr/Sonarr queue. Only used when at least one of the above is set. |
 
 ### The qBittorrent authentication
 
@@ -237,12 +243,58 @@ it never deletes a file it did not stage. **The seedbox is never touched.** Set
 
 A season pack is one torrent but many files, and Sonarr imports the episodes one
 at a time — one **On Import** webhook each. So the service deletes only the one
-file that was just imported (it matches it by the size the webhook reports),
-never the whole pack while other episodes still wait. The folder itself is
-removed once no video file is left, which takes the samples and the subtitles
-with it. (A very old Radarr or Sonarr sends no size; then a pack file cannot be
-matched, so the folder is kept until it is empty of videos. Nothing is ever
+file that was just imported, never the whole pack while other episodes still
+wait. It is matched first by the file name Radarr or Sonarr reports (a name
+never collides), and by the file size only as a fallback for a very old Radarr
+or Sonarr that sends no path — episodes of the same show are often encoded to
+the same bitrate, so two of them can land on the exact same byte count, and
+size alone would then match neither. If neither matches exactly one staged
+file, nothing is deleted, so a wrong episode is never lost. Two import webhooks
+for the same pack that arrive back to back are handled one at a time, so
+neither one loses track of what the other already removed.
+
+The **Settings** tab of the panel has two more switches for this cleanup:
+
+- **Also delete these file types** — a comma-separated list of extensions
+  (`.nfo, .txt, .srt, .jpg`, for example) removed alongside the imported file
+  itself on every import, so a pack does not carry the season's `.nfo` and
+  samples around until the last episode lands. The imported file is always
+  deleted; this list is for everything else.
+- **Delete a season-pack folder once every episode in it is imported** — on by
+  default, the same as the old, fixed behaviour. Turn it off to keep the
+  now-empty folder instead (use the Files tab to remove it by hand when you
+  are ready).
+
+(A very old Radarr or Sonarr sends no size and no path; then a pack file cannot
+be matched, so the folder is kept until it is empty of videos. Nothing is ever
 deleted by mistake.)
+
+### Flagging an untracked download
+
+Radarr has no "torrent is done" event, only "On Grab", so this service waits
+for qBittorrent and never talks to Radarr again for that torrent — until the
+import. That leaves one gap: if the download is removed from Radarr's or
+Sonarr's own queue after the grab (someone clears it by hand in the app, an
+indexer's release gets replaced and the old one is cancelled, or something
+imports it outside this service), this service has no way to know and keeps
+waiting for it, silently, for up to `MAX_WAIT_HOURS`.
+
+Set `RADARR_URL`/`RADARR_API_KEY` and/or `SONARR_URL`/`SONARR_API_KEY` to
+close that gap. With at least one set, the worker periodically (every
+`ARR_CHECK_INTERVAL` seconds, `300` by default) asks that app's own queue
+(`GET /api/v3/queue`, not the webhook) whether it still lists the torrent. A
+job that is not there any more is **flagged**: it shows an **Untracked** tag
+next to it in the Activity tab's Queue table, and one log line is written.
+Nothing is deleted or removed automatically — a flag only tells you to take a
+look, and it clears itself if the torrent reappears in the *arr queue on a
+later check. Two safeguards keep this from ever flagging something by
+mistake: a job younger than two minutes is never checked (Radarr may not have
+finished adding it to its own queue view yet), and a check that fails outright
+(the app is unreachable, or answers with an error) is treated as "unknown",
+never as "not there".
+
+This is entirely optional. With neither Radarr nor Sonarr configured here,
+nothing changes.
 
 ## The transfer mode
 
@@ -283,28 +335,38 @@ prefix, the same way `REMOTE_DIR` works for SFTP.
 ## The web panel
 
 Open `http://<this-host>:8080/` in a browser. The panel is like the one in
-Sonarr and Radarr. It refreshes by itself. It has four tabs:
+Sonarr and Radarr. It refreshes by itself. It follows Material 3: a light and
+a dark theme, chosen from the browser's preference by default, with a toggle
+(top right) that overrides it and is remembered per browser. It has five tabs:
 
 | Tab | What it shows |
 | --- | --- |
 | Activity | The running download, with a progress bar, and the queue. |
 | Files | The files that this service put on the local disk. |
 | History | Every event: grabbed, downloaded, failed, expired, removed, imported. |
-| Events | The last log lines, newest first. |
-| Settings | The chown and chmod preferences for the finished files. |
+| Events | The last log lines, newest first. Turn on debug logging in Settings to see the raw Radarr/Sonarr webhook body here too. |
+| Settings | The chown/chmod, cleanup, and log-level preferences. |
 
 Each row in the queue has a **Remove** button. Use it when a torrent goes stale
 and needs a hand: it drops the job and its part files. The seedbox is not
-touched.
+touched. A row can also carry an **Untracked** tag — see
+[Flagging an untracked download](#flagging-an-untracked-download) — which is
+exactly the kind of stale entry the Remove button is for.
 
 Each finished row in the History tab has a **Redownload** button. Use it when a
 local copy was deleted (or came out broken) and the app needs it again: it
 clears any staged copy and part files and puts the whole torrent back in the
 queue for a clean fetch. The seedbox is not touched.
 
+Each row in the Files tab has a **Delete** button. Use it to clear a file from
+the local disk by hand — a broken copy, something left behind by a folder that
+was kept on purpose (see `removeEmptyFolders` above), or anything else this
+service put there. The seedbox is not touched.
+
 The panel is one page with no framework. It reads the `/api` endpoints below,
-and it has three writes: the Remove button (`POST /api/remove`), the Redownload
-button (`POST /api/redownload`), and the Settings tab (`POST /api/settings`).
+and it has four writes: the Remove button (`POST /api/remove`), the Redownload
+button (`POST /api/redownload`), the Delete button in the Files tab
+(`POST /api/files/remove`), and the Settings tab (`POST /api/settings`).
 
 ## The HTTP endpoints
 
@@ -315,7 +377,8 @@ button (`POST /api/redownload`), and the Settings tab (`POST /api/settings`).
 | `POST /sonarr` | The Sonarr webhook (On Grab and On Import). |
 | `POST /api/remove` | Take a torrent out of the queue. Body: `{"hash":"..."}`. |
 | `POST /api/redownload` | Queue a finished torrent again. Body: `{"hash":"..."}`. |
-| `GET /api/settings` | The chown and chmod preferences. |
+| `POST /api/files/remove` | Delete a file from the local disk by hand. Body: `{"path":"..."}`, relative to `LOCAL_ROOT`, as `GET /api/files` reports it. |
+| `GET /api/settings` | The chown/chmod, cleanup, and log-level preferences. |
 | `POST /api/settings` | Change them. Body: the fields to change. |
 | `GET /status` | The queue and the running download, as JSON. |
 | `GET /api/status` | The same, with raw numbers, for the panel. |
@@ -359,6 +422,18 @@ aabbccdd: 69.3 % (8.1 MiB of 11.7 MiB) at 8.0 MiB/s, 24s left [file 1 of 3]
 aabbccdd: Ready at '/downloads/movies/Film.2024'. Radarr can import it now.
 ```
 
+Set `LOG_LEVEL` to `debug` (or flip it in the panel's Settings tab, no restart
+needed) to also log the raw body of every Radarr and Sonarr webhook, as it
+arrives:
+
+```text
+DEBUG: Radarr webhook received: {"eventType":"Download","downloadId":"aabbccdd...","movie":{"title":"Film"},"movieFile":{"size":12345678,"relativePath":"Film.2024/Film.mkv"}}
+```
+
+This is the first place to look when a webhook does not seem to do what it
+should: it shows exactly what Radarr or Sonarr sent, before this service makes
+any decision about it.
+
 ## Development
 
 ```bash
@@ -393,8 +468,15 @@ The same command adds a torrent that Radarr grabbed before the webhook existed.
 ### The tests
 
 `npm test` compiles the sources with the tests and runs the Node test runner.
-The suite covers the path map, the progress numbers, the queue on disk, and the
-webhook, with no network and no seedbox.
+The suite covers the path map, the progress numbers, the queue on disk, the
+webhook, the season-pack import cleanup, and the Radarr/Sonarr queue check
+(against a small fake HTTP server, in `test/arr.test.ts`), with no network
+and no seedbox.
+
+The **Tests** workflow (`.github/workflows/test.yml`) runs `npm run typecheck`
+and `npm test` on every pull request, and on a direct push to `main`, so a
+change gets fast feedback with no Docker build. See [The image](#the-image)
+for the separate workflow that builds and publishes the image.
 
 ## The files
 
@@ -405,6 +487,7 @@ webhook, with no network and no seedbox.
 | `src/server.ts` | The webhook and the status endpoint. |
 | `src/worker.ts` | The loop: poll, download, move. |
 | `src/qbittorrent.ts` | The Web API client. |
+| `src/arr.ts` | The Radarr/Sonarr API client, for the *arr-queue check. |
 | `src/fetcher.ts` | Picks the transport (SFTP or p2f) from the mode. |
 | `src/sftp.ts` | The SFTP download, with progress. |
 | `src/p2f.ts` | The peer-to-file download (via p2f-lib). |
@@ -419,9 +502,11 @@ webhook, with no network and no seedbox.
 
 ## The image
 
-A GitHub release makes a new image. The workflow also starts by hand from the
-Actions tab. The image goes to the GitHub Container Registry, for `amd64` and
-`arm64`.
+A GitHub release makes a new image. The workflow (`.github/workflows/docker.yml`)
+also starts by hand from the Actions tab. It runs the tests first, then builds
+and pushes. The image goes to the GitHub Container Registry, for `amd64` and
+`arm64`. No image is built from a plain branch or pull request; that is what
+the separate Tests workflow above is for.
 
 ```bash
 docker pull ghcr.io/<owner>/<repository>:latest

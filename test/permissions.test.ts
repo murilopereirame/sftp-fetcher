@@ -16,6 +16,9 @@ const off: Settings = {
   chmod: false,
   fileMode: null,
   dirMode: null,
+  logLevel: "info",
+  cleanupExtensions: [],
+  removeEmptyFolders: true,
 };
 
 test("chmod sets the mode of the folder and the files under it", async () => {

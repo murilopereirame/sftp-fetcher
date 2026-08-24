@@ -95,6 +95,18 @@ function password(): string {
   return required("SFTP_PASSWORD");
 }
 
+export type LogLevel = "info" | "debug";
+
+/**
+ * The starting log level. "debug" also logs the raw Radarr/Sonarr webhook
+ * body and other detail that is too noisy for every day. The web panel
+ * Settings tab can change this at runtime; this only seeds it on first start,
+ * the same way PUID and PGID seed the chown switch.
+ */
+function logLevel(): LogLevel {
+  return optional("LOG_LEVEL", "info").toLowerCase() === "debug" ? "debug" : "info";
+}
+
 export type QbitAuthMode = "apikey" | "password" | "none";
 
 /**
@@ -198,6 +210,25 @@ export const config = {
    * seedbox data is never touched. Set to false to keep the local copy.
    */
   removeAfterImport: boolean("REMOVE_AFTER_IMPORT", true),
+  /** "info" or "debug". Seeds the settings table on the first start only. */
+  logLevel: logLevel(),
+  /**
+   * Radarr's and Sonarr's own REST API (not the webhook). Optional: set the
+   * URL and the API key for an app to let the worker periodically check that
+   * a queued torrent is still in that app's own download queue, and flag it
+   * in the panel when it is not (see src/arr.ts and Worker.checkArrQueues).
+   * A person removing a download by hand in Radarr/Sonarr, or an import that
+   * happened outside this service, are the two common causes. Nothing is
+   * touched automatically; a flag is only ever informational.
+   */
+  radarr: {
+    url: trim(optional("RADARR_URL", "")),
+    apiKey: optional("RADARR_API_KEY", ""),
+  },
+  sonarr: {
+    url: trim(optional("SONARR_URL", "")),
+    apiKey: optional("SONARR_API_KEY", ""),
+  },
   timing: {
     /** Seconds between two passes over the queue. */
     pollInterval: number("POLL_INTERVAL", 60),
@@ -207,6 +238,8 @@ export const config = {
     copyWaitSeconds: number("COPY_WAIT", 60),
     /** Seconds between two progress lines in the log. */
     progressInterval: number("PROGRESS_INTERVAL", 15),
+    /** Seconds between two checks of the Radarr/Sonarr queue (see above). */
+    arrCheckInterval: number("ARR_CHECK_INTERVAL", 300),
   },
 } as const;
 

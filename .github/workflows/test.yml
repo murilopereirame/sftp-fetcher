@@ -1,0 +1,28 @@
+name: Tests
+
+# Runs on every pull request, and on a direct push to main, so a change gets
+# fast feedback with no Docker build. The image workflow (docker.yml) has its
+# own "test" job too, as a gate before it publishes on a release.
+#
+# Not "push" on every branch as well: a branch with an open pull request
+# would then run this workflow twice for the same commit, once per trigger.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
