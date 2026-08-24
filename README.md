@@ -303,7 +303,9 @@ prefix, the same way `REMOTE_DIR` works for SFTP.
 ## The web panel
 
 Open `http://<this-host>:8080/` in a browser. The panel is like the one in
-Sonarr and Radarr. It refreshes by itself. It has four tabs:
+Sonarr and Radarr. It refreshes by itself. It follows Material 3: a light and
+a dark theme, chosen from the browser's preference by default, with a toggle
+(top right) that overrides it and is remembered per browser. It has five tabs:
 
 | Tab | What it shows |
 | --- | --- |
