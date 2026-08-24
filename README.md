@@ -474,9 +474,9 @@ webhook, the season-pack import cleanup, and the Radarr/Sonarr queue check
 and no seedbox.
 
 The **Tests** workflow (`.github/workflows/test.yml`) runs `npm run typecheck`
-and `npm test` on every push and every pull request, so a change gets fast
-feedback with no Docker build. See [The image](#the-image) for the separate
-workflow that builds and publishes the image.
+and `npm test` on every pull request, and on a direct push to `main`, so a
+change gets fast feedback with no Docker build. See [The image](#the-image)
+for the separate workflow that builds and publishes the image.
 
 ## The files
 

@@ -1,11 +1,14 @@
 name: Tests
 
-# Runs on every push and every pull request, so a change gets fast feedback
-# with no Docker build. The image workflow (docker.yml) has its own "test"
-# job too, as a gate before it publishes on a release.
+# Runs on every pull request, and on a direct push to main, so a change gets
+# fast feedback with no Docker build. The image workflow (docker.yml) has its
+# own "test" job too, as a gate before it publishes on a release.
+#
+# Not "push" on every branch as well: a branch with an open pull request
+# would then run this workflow twice for the same commit, once per trigger.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:

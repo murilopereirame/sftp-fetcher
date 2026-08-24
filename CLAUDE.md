@@ -209,8 +209,10 @@ end-to-end test with no seedbox. The README shows the commands.
 ## Continuous integration
 
 `.github/workflows/test.yml` runs `npm run typecheck` and `npm test` on every
-push and every pull request. It builds and pushes nothing; it exists purely so
-a change gets fast feedback without waiting on a release.
+pull request, and on a direct push to `main` (not on every branch — a branch
+with an open pull request would otherwise run this workflow twice for the
+same commit). It builds and pushes nothing; it exists purely so a change gets
+fast feedback without waiting on a release.
 
 ## The image
 
