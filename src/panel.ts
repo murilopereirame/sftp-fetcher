@@ -22,18 +22,22 @@
  *
  * The client script uses "+" to build strings, never a backtick and never a
  * dollar-brace. Those would break this template literal at build time. Any
- * symbol (an emoji, an em dash) is written as an HTML numeric entity in
+ * symbol (an em dash, an ellipsis) is written as an HTML numeric entity in
  * markup, or a "\\u" escape inside a JS string, for the same reason: this
  * whole file is itself one template literal, so a stray backtick anywhere in
  * it — even in a CSS value or a comment — would end the file early.
+ *
+ * No emoji: every icon (the brand mark, the empty states, the theme toggle)
+ * is a small hand-drawn inline SVG, colored with currentColor or the
+ * accent/on-accent CSS variables so it follows the active theme.
  */
 export const panelHtml = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sftp-fetcher</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128225;</text></svg>">
+<title>Fetcher</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='12' fill='rgb(0,97,164)'/><path d='M24 11v16' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/><path d='M16 21l8 8 8-8' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' fill='none'/><path d='M13 36h22' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/></svg>">
 <style>
   /* Material 3 baseline color roles, light theme (the default). */
   :root {
@@ -44,10 +48,10 @@ export const panelHtml = `<!doctype html>
     --outline: #79747e;
     --text: #1d1b20;
     --muted: #49454f;
-    --accent: #6750a4;
+    --accent: #0061a4;
     --on-accent: #ffffff;
-    --accent-container: #eaddff;
-    --on-accent-container: #21005d;
+    --accent-container: #d1e4ff;
+    --on-accent-container: #001d36;
     --tertiary: #7d5260;
     --tertiary-container: #ffd8e4;
     --green: #2e7d32;
@@ -56,7 +60,7 @@ export const panelHtml = `<!doctype html>
     --red-container: #f9dedc;
     --amber: #7a5900;
     --amber-container: #ffdea6;
-    --ring: rgba(103, 80, 164, .18);
+    --ring: rgba(0, 97, 164, .18);
     --shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 1px 3px rgba(0, 0, 0, .1);
   }
   /* The dark set, by system preference... */
@@ -69,10 +73,10 @@ export const panelHtml = `<!doctype html>
       --outline: #938f99;
       --text: #e6e0e9;
       --muted: #cac4d0;
-      --accent: #d0bcff;
-      --on-accent: #381e72;
-      --accent-container: #4f378b;
-      --on-accent-container: #eaddff;
+      --accent: #9ecaff;
+      --on-accent: #003258;
+      --accent-container: #00497d;
+      --on-accent-container: #d1e4ff;
       --tertiary: #efb8c8;
       --tertiary-container: #633b48;
       --green: #a5d6a7;
@@ -81,7 +85,7 @@ export const panelHtml = `<!doctype html>
       --red-container: #8c1d18;
       --amber: #ffd599;
       --amber-container: #5c4200;
-      --ring: rgba(208, 188, 255, .22);
+      --ring: rgba(158, 202, 255, .22);
       --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
     }
   }
@@ -94,10 +98,10 @@ export const panelHtml = `<!doctype html>
     --outline: #938f99;
     --text: #e6e0e9;
     --muted: #cac4d0;
-    --accent: #d0bcff;
-    --on-accent: #381e72;
-    --accent-container: #4f378b;
-    --on-accent-container: #eaddff;
+    --accent: #9ecaff;
+    --on-accent: #003258;
+    --accent-container: #00497d;
+    --on-accent-container: #d1e4ff;
     --tertiary: #efb8c8;
     --tertiary-container: #633b48;
     --green: #a5d6a7;
@@ -106,7 +110,7 @@ export const panelHtml = `<!doctype html>
     --red-container: #8c1d18;
     --amber: #ffd599;
     --amber-container: #5c4200;
-    --ring: rgba(208, 188, 255, .22);
+    --ring: rgba(158, 202, 255, .22);
     --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
   }
   * { box-sizing: border-box; }
@@ -134,7 +138,9 @@ export const panelHtml = `<!doctype html>
     z-index: 5;
   }
   header .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; letter-spacing: .1px; }
-  header .logo-mark { font-size: 18px; line-height: 1; }
+  .logo-mark { flex: none; display: block; }
+  .logo-mark rect { fill: var(--accent); }
+  .logo-mark path { stroke: var(--on-accent); }
   header .sub { color: var(--muted); font-size: 12px; }
   .icon-btn {
     width: 34px;
@@ -291,7 +297,7 @@ export const panelHtml = `<!doctype html>
   .form .msg.ok { color: var(--green); }
   .form .msg.err { color: var(--red); }
   .empty { color: var(--muted); padding: 44px 16px; text-align: center; font-size: 13px; }
-  .empty .icon { display: block; font-size: 30px; margin-bottom: 10px; opacity: .55; }
+  .empty-icon { display: block; margin: 0 auto 10px; opacity: .45; }
   .events { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   .events .row { display: flex; gap: 12px; padding: 6px 4px; border-radius: 6px; border-bottom: 1px solid var(--line); }
   .events .row:hover { background: var(--panel2); }
@@ -309,11 +315,19 @@ export const panelHtml = `<!doctype html>
 </head>
 <body>
 <header>
-  <span class="logo"><span class="logo-mark">&#128225;</span>sftp-fetcher</span>
+  <span class="logo">
+    <svg class="logo-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+      <rect width="24" height="24" rx="6"></rect>
+      <path d="M12 6v9" fill="none" stroke-width="2" stroke-linecap="round"></path>
+      <path d="M8 11.5 12 15.5 16 11.5" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="M7 18h10" fill="none" stroke-width="2" stroke-linecap="round"></path>
+    </svg>
+    Fetcher
+  </span>
   <span class="sub">seedbox &rarr; Radarr</span>
   <span id="mode" class="sub"></span>
   <span class="spacer"></span>
-  <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle theme">&#9728;</button>
+  <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle theme"></button>
   <span id="dot" class="dot idle"></span>
   <span id="state" class="sub">idle</span>
 </header>
@@ -327,29 +341,29 @@ export const panelHtml = `<!doctype html>
 <main>
   <section id="tab-activity" class="tab on">
     <div id="download">
-      <div class="card"><h2>Downloading</h2><div class="empty"><span class="icon">&#128164;</span>Loading&#8230;</div></div>
+      <div class="card"><h2>Downloading</h2><div class="empty">Loading&#8230;</div></div>
     </div>
     <div class="card">
       <h2>Queue</h2>
-      <div id="queue"><div class="empty"><span class="icon">&#128237;</span>Loading&#8230;</div></div>
+      <div id="queue"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-files" class="tab">
     <div class="card">
       <h2>Available files</h2>
-      <div id="files"><div class="empty"><span class="icon">&#128193;</span>Loading&#8230;</div></div>
+      <div id="files"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-history" class="tab">
     <div class="card">
       <h2>History</h2>
-      <div id="history"><div class="empty"><span class="icon">&#128220;</span>Loading&#8230;</div></div>
+      <div id="history"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-events" class="tab">
     <div class="card">
       <h2>Events</h2>
-      <div id="events" class="events"><div class="empty"><span class="icon">&#128221;</span>Loading&#8230;</div></div>
+      <div id="events" class="events"><div class="empty">Loading&#8230;</div></div>
     </div>
   </section>
   <section id="tab-settings" class="tab">
@@ -441,6 +455,23 @@ export const panelHtml = `<!doctype html>
     });
   }
 
+  // The one brand glyph (an arrow fetching down into a tray), reused as the
+  // "nothing here yet" mark in every empty state. No emoji anywhere in the
+  // panel: every icon is this hand-drawn inline SVG, colored via currentColor
+  // so it follows the surrounding text color in both themes.
+  var emptyIcon = '<svg class="empty-icon" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true">' +
+    '<path d="M12 4v11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M5 19h14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+    '</svg>';
+  var sunIcon = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/>' +
+    '<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+    '</svg>';
+  var moonIcon = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+    '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>';
+
   // The theme toggle. It follows the browser's preference by default; the
   // button overrides that and the choice is remembered per browser. The CSS
   // reacts to the "data-theme" attribute on <html> (see :root[data-theme]).
@@ -459,7 +490,7 @@ export const panelHtml = `<!doctype html>
     var dark = isDarkNow();
     // Sun when dark is active (press it to go light), moon when light is
     // active (press it to go dark): the icon shown is the mode a click gives.
-    themeBtn.innerHTML = dark ? "&#9728;" : "&#9790;";
+    themeBtn.innerHTML = dark ? sunIcon : moonIcon;
     themeBtn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
   }
   try {
@@ -523,12 +554,12 @@ export const panelHtml = `<!doctype html>
     } else {
       dot.className = "dot idle";
       state.textContent = "idle";
-      box.innerHTML = '<div class="card"><h2>Downloading</h2><div class="empty"><span class="icon">&#128164;</span>Nothing is downloading right now.</div></div>';
+      box.innerHTML = '<div class="card"><h2>Downloading</h2><div class="empty">' + emptyIcon + 'Nothing is downloading right now.</div></div>';
     }
 
     var q = document.getElementById("queue");
     if (!s.queue.length) {
-      q.innerHTML = '<div class="empty"><span class="icon">&#128237;</span>The queue is empty.</div>';
+      q.innerHTML = '<div class="empty">' + emptyIcon + 'The queue is empty.</div>';
       return;
     }
     var rows = s.queue.map(function (j) {
@@ -561,7 +592,7 @@ export const panelHtml = `<!doctype html>
     document.getElementById("c-files").textContent = data.files.length;
     var el = document.getElementById("files");
     if (!data.files.length) {
-      el.innerHTML = '<div class="empty"><span class="icon">&#128193;</span>No files on the local disk yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No files on the local disk yet.</div>';
       return;
     }
     var rows = data.files.map(function (f) {
@@ -599,7 +630,7 @@ export const panelHtml = `<!doctype html>
     document.getElementById("c-history").textContent = list.length;
     var el = document.getElementById("history");
     if (!list.length) {
-      el.innerHTML = '<div class="empty"><span class="icon">&#128220;</span>No history yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No history yet.</div>';
       return;
     }
     var rows = list.map(function (h) {
@@ -638,7 +669,7 @@ export const panelHtml = `<!doctype html>
   function renderEvents(list) {
     var el = document.getElementById("events");
     if (!list.length) {
-      el.innerHTML = '<div class="empty"><span class="icon">&#128221;</span>No log lines yet.</div>';
+      el.innerHTML = '<div class="empty">' + emptyIcon + 'No log lines yet.</div>';
       return;
     }
     el.innerHTML = list.map(function (e) {

@@ -243,7 +243,7 @@ test("the root path serves the web panel", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /text\/html/);
   const text = await response.text();
-  assert.match(text, /<title>sftp-fetcher<\/title>/);
+  assert.match(text, /<title>Fetcher<\/title>/);
 });
 
 test("the api status endpoint has raw numbers and counts", async () => {
