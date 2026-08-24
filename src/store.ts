@@ -18,7 +18,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, type LogLevel } from "./config.js";
 import { log } from "./log.js";
 
 export interface Job {
@@ -85,6 +85,19 @@ export interface Settings {
   chmod: boolean;
   fileMode: number | null;
   dirMode: number | null;
+  /** "info" or "debug". See src/log.ts. */
+  logLevel: LogLevel;
+  /**
+   * Extra file extensions (with the dot, e.g. ".nfo") removed alongside the
+   * imported file itself. Empty means no extra cleanup, the old behaviour.
+   */
+  cleanupExtensions: string[];
+  /**
+   * Delete a season-pack folder once every video in it is imported (and any
+   * junk the extensions above do not cover is gone too). Off keeps the empty
+   * folder, for a person to clear out by hand from the Files tab.
+   */
+  removeEmptyFolders: boolean;
 }
 
 /** The mode when a new install has nothing set. A file, then a folder. */
@@ -282,6 +295,9 @@ export class Store {
       chmod: false,
       fileMode: DEFAULT_FILE_MODE,
       dirMode: DEFAULT_DIR_MODE,
+      logLevel: config.logLevel,
+      cleanupExtensions: [],
+      removeEmptyFolders: true,
     });
   }
 
@@ -315,6 +331,13 @@ export class Store {
     return Number.isInteger(parsed) ? parsed : null;
   }
 
+  /** Parse the stored comma list of extensions. Empty means no extra cleanup. */
+  private extensionsSetting(): string[] {
+    const value = this.getSetting("cleanupExtensions");
+    if (value === null || value === "") return [];
+    return value.split(",").map((v) => v.trim()).filter((v) => v !== "");
+  }
+
   /** The current permission preferences. */
   settings(): Settings {
     return {
@@ -324,6 +347,9 @@ export class Store {
       chmod: this.getSetting("chmod") === "1",
       fileMode: this.modeSetting("fileMode"),
       dirMode: this.modeSetting("dirMode"),
+      logLevel: this.getSetting("logLevel") === "debug" ? "debug" : "info",
+      cleanupExtensions: this.extensionsSetting(),
+      removeEmptyFolders: this.getSetting("removeEmptyFolders") !== "0",
     };
   }
 
@@ -341,6 +367,9 @@ export class Store {
       "dirMode",
       s.dirMode === null ? "" : (s.dirMode & 0o7777).toString(8),
     );
+    this.putSetting("logLevel", s.logLevel);
+    this.putSetting("cleanupExtensions", s.cleanupExtensions.join(","));
+    this.putSetting("removeEmptyFolders", s.removeEmptyFolders ? "1" : "0");
   }
 
   /** Change some preferences and return the whole set after the change. */

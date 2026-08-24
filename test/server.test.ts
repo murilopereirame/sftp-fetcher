@@ -287,10 +287,16 @@ test("the settings endpoint returns the modes as octal text", async () => {
     chmod: boolean;
     fileMode: string | null;
     dirMode: string | null;
+    logLevel: string;
+    cleanupExtensions: string;
+    removeEmptyFolders: boolean;
   };
   assert.equal(typeof body.chown, "boolean");
   assert.equal(body.fileMode, "664");
   assert.equal(body.dirMode, "775");
+  assert.equal(body.logLevel, "info");
+  assert.equal(body.cleanupExtensions, "");
+  assert.equal(body.removeEmptyFolders, true);
 });
 
 test("posting settings changes them", async () => {
@@ -298,19 +304,31 @@ test("posting settings changes them", async () => {
     chmod: true,
     fileMode: "600",
     uid: "1000",
+    cleanupExtensions: ".nfo, txt",
+    removeEmptyFolders: false,
   });
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
     ok: boolean;
-    settings: { chmod: boolean; fileMode: string; uid: number };
+    settings: {
+      chmod: boolean;
+      fileMode: string;
+      uid: number;
+      cleanupExtensions: string;
+      removeEmptyFolders: boolean;
+    };
   };
   assert.equal(body.ok, true);
   assert.equal(body.settings.chmod, true);
   assert.equal(body.settings.fileMode, "600");
   assert.equal(body.settings.uid, 1000);
+  // A bare word without a dot gets one; a mixed comma/space list is parsed.
+  assert.equal(body.settings.cleanupExtensions, ".nfo, .txt");
+  assert.equal(body.settings.removeEmptyFolders, false);
 
   // The store kept it.
   assert.equal(store.settings().fileMode, 0o600);
+  assert.deepEqual(store.settings().cleanupExtensions, [".nfo", ".txt"]);
 });
 
 test("a bad mode is refused with 400", async () => {
@@ -318,6 +336,53 @@ test("a bad mode is refused with 400", async () => {
   assert.equal(response.status, 400);
   const body = (await response.json()) as { ok: boolean };
   assert.equal(body.ok, false);
+});
+
+test("a bad log level is refused with 400", async () => {
+  const response = await post("/api/settings", { logLevel: "verbose" });
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, false);
+});
+
+test("turning on debug logging logs the raw webhook body", async () => {
+  const set = await post("/api/settings", { logLevel: "debug" });
+  assert.equal(set.status, 200);
+
+  await post("/radarr", { eventType: "Test" });
+
+  const events = (await (await fetch(`${base}/api/activity`)).json()) as {
+    message: string;
+  }[];
+  assert.ok(
+    events.some((e) => e.message.startsWith("DEBUG: Radarr webhook received:")),
+  );
+
+  // Back to normal, so it does not spill into later test files.
+  await post("/api/settings", { logLevel: "info" });
+});
+
+test("the files endpoint deletes a file from the local disk", async () => {
+  const relative = path.join("movies", "Panel.Delete", "film.mkv");
+  const full = path.join(config.localRoot, relative);
+  await mkdir(path.dirname(full), { recursive: true });
+  await writeFile(full, "movie data");
+
+  const response = await post("/api/files/remove", { path: relative });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { ok: boolean };
+  assert.equal(body.ok, true);
+  await assert.rejects(stat(full));
+});
+
+test("deleting a file that is not there gives 404", async () => {
+  const response = await post("/api/files/remove", { path: "movies/Gone.mkv" });
+  assert.equal(response.status, 404);
+});
+
+test("deleting a path that escapes the root is refused", async () => {
+  const response = await post("/api/files/remove", { path: "../escape.txt" });
+  assert.equal(response.status, 404);
 });
 
 test("the health check still answers on its own path", async () => {

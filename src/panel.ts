@@ -144,7 +144,7 @@ export const panelHtml = `<!doctype html>
   .form .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .form .pair { display: flex; gap: 12px; }
   .form .pair label { flex: 1; display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
-  .form input[type=text] {
+  .form input[type=text], .form select {
     background: var(--panel2);
     border: 1px solid var(--line);
     color: var(--text);
@@ -152,7 +152,10 @@ export const panelHtml = `<!doctype html>
     border-radius: 6px;
     font-size: 14px;
   }
-  .form input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .form input[type=text]:focus, .form select:focus { outline: none; border-color: var(--accent); }
+  .form select { margin-top: 4px; }
+  .form .sep { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
+  .form > .hint { margin: -8px 0 0; }
   .form .actions { display: flex; align-items: center; gap: 12px; }
   button.save {
     background: var(--accent);
@@ -219,7 +222,7 @@ export const panelHtml = `<!doctype html>
   </section>
   <section id="tab-settings" class="tab">
     <div class="card">
-      <h2>Permissions after a download</h2>
+      <h2>Settings</h2>
       <p class="hint">Radarr imports a film by moving it, as its own user. Set
       the owner or the mode here so the import has no permission error. Both are
       off by default. A chown needs this container to run as root.</p>
@@ -234,6 +237,21 @@ export const panelHtml = `<!doctype html>
           <label>File mode<input type="text" id="set-filemode" inputmode="numeric" placeholder="e.g. 664"></label>
           <label>Folder mode<input type="text" id="set-dirmode" inputmode="numeric" placeholder="e.g. 775"></label>
         </div>
+        <hr class="sep">
+        <label>Also delete these file types<input type="text" id="set-extensions" placeholder="e.g. .nfo, .txt, .srt, .jpg"></label>
+        <p class="hint">Removed alongside the imported file itself, which is
+        always deleted.</p>
+        <label class="check"><input type="checkbox" id="set-emptydirs"> Delete a season-pack folder once every episode in it is imported</label>
+        <hr class="sep">
+        <label>Log level
+          <select id="set-loglevel">
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+          </select>
+        </label>
+        <p class="hint">Debug also logs the raw Radarr and Sonarr webhook
+        body, as it is received. Useful when a webhook does not behave as
+        expected.</p>
         <div class="actions">
           <button id="set-save" class="save">Save</button>
           <span id="set-msg" class="msg"></span>
@@ -373,12 +391,28 @@ export const panelHtml = `<!doctype html>
     var rows = data.files.map(function (f) {
       return '<tr><td class="path">' + esc(f.path) + '</td>' +
         '<td class="num">' + fmtBytes(f.bytes) + '</td>' +
-        '<td class="num">' + rel(f.modifiedAt) + '</td></tr>';
+        '<td class="num">' + rel(f.modifiedAt) + '</td>' +
+        '<td class="num"><button class="rm" data-path="' + esc(f.path) + '">Delete</button></td></tr>';
     }).join("");
     el.innerHTML =
       '<div class="table-wrap"><table><thead><tr><th>Path (' + esc(data.root) +
-      ')</th><th>Size</th><th>Modified</th></tr></thead><tbody>' + rows +
+      ')</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>' + rows +
       '</tbody></table></div>';
+    el.querySelectorAll("button.rm").forEach(function (b) {
+      b.addEventListener("click", function () {
+        deleteFile(b.getAttribute("data-path"));
+      });
+    });
+  }
+
+  function deleteFile(path) {
+    if (!path) return;
+    if (!confirm("Delete '" + path + "' from the local disk? This cannot be undone.")) return;
+    fetch("api/files/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path })
+    }).then(function () { refreshTab(); }).catch(function () {});
   }
 
   // The events that a torrent can be re-downloaded from. A "grabbed" event is
@@ -444,6 +478,9 @@ export const panelHtml = `<!doctype html>
     document.getElementById("set-chmod").checked = !!s.chmod;
     document.getElementById("set-filemode").value = s.fileMode === null || s.fileMode === undefined ? "" : s.fileMode;
     document.getElementById("set-dirmode").value = s.dirMode === null || s.dirMode === undefined ? "" : s.dirMode;
+    document.getElementById("set-extensions").value = s.cleanupExtensions || "";
+    document.getElementById("set-emptydirs").checked = !!s.removeEmptyFolders;
+    document.getElementById("set-loglevel").value = s.logLevel === "debug" ? "debug" : "info";
   }
 
   function loadSettings() {
@@ -463,7 +500,10 @@ export const panelHtml = `<!doctype html>
       gid: document.getElementById("set-gid").value.trim(),
       chmod: document.getElementById("set-chmod").checked,
       fileMode: document.getElementById("set-filemode").value.trim(),
-      dirMode: document.getElementById("set-dirmode").value.trim()
+      dirMode: document.getElementById("set-dirmode").value.trim(),
+      cleanupExtensions: document.getElementById("set-extensions").value.trim(),
+      removeEmptyFolders: document.getElementById("set-emptydirs").checked,
+      logLevel: document.getElementById("set-loglevel").value
     };
     setMsg("Saving\\u2026", "");
     fetch("api/settings", {

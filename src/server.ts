@@ -12,11 +12,23 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { activity } from "./events.js";
-import { listFiles, removeImported, removeIncomplete, removeLocal } from "./files.js";
-import { errorText, log, short } from "./log.js";
+import {
+  type ImportedFile,
+  listFiles,
+  removeImported,
+  removeIncomplete,
+  removeLocal,
+} from "./files.js";
+import { debug, errorText, log, setLogLevel, short } from "./log.js";
 import { panelHtml } from "./panel.js";
 import { bytes, duration, getProgress, percent } from "./progress.js";
 import type { Settings, Store } from "./store.js";
+
+interface WebhookFile {
+  size?: number;
+  relativePath?: string;
+  path?: string;
+}
 
 interface ArrWebhook {
   eventType?: string;
@@ -27,9 +39,9 @@ interface ArrWebhook {
   /** Sonarr sends this. */
   series?: { title?: string };
   /** Radarr sends this on an import: the file it just imported. */
-  movieFile?: { size?: number };
+  movieFile?: WebhookFile;
   /** Sonarr sends this on an import: the file it just imported. */
-  episodeFile?: { size?: number };
+  episodeFile?: WebhookFile;
 }
 
 /** The best name for a job: the release, then the movie or the series. */
@@ -43,13 +55,17 @@ function webhookTitle(payload: ArrWebhook): string {
 }
 
 /**
- * The size of the file that was just imported, from the import webhook. Radarr
- * puts it in `movieFile`, Sonarr in `episodeFile`. It matches the staged file
- * that this program can delete. Undefined when the app is too old to send it.
+ * What the import webhook says about the file it just imported: Radarr puts
+ * it in `movieFile`, Sonarr in `episodeFile`. This matches the staged file
+ * that this program can delete. See files.ts for how the two fields are used.
  */
-function importedSize(payload: ArrWebhook): number | undefined {
-  const size = payload.movieFile?.size ?? payload.episodeFile?.size;
-  return typeof size === "number" && size > 0 ? size : undefined;
+function importedFile(payload: ArrWebhook): ImportedFile {
+  const file = payload.movieFile ?? payload.episodeFile;
+  const result: ImportedFile = {};
+  if (typeof file?.size === "number" && file.size > 0) result.size = file.size;
+  const name = file?.relativePath ?? file?.path;
+  if (typeof name === "string" && name !== "") result.name = name;
+  return result;
 }
 
 /** Keep the hex characters only. A bad value cannot become a path. */
@@ -225,6 +241,12 @@ async function handle(
     return;
   }
 
+  // The panel sends this to delete a file from the local disk by hand.
+  if (request.method === "POST" && target === "/api/files/remove") {
+    await handleFileRemove(request, response);
+    return;
+  }
+
   // Radarr and Sonarr post their webhooks here. The payloads differ only in
   // the title field, so one handler serves both. The source label is for the
   // log line only.
@@ -251,9 +273,12 @@ async function handleWebhook(
   store: Store,
   source: string,
 ): Promise<void> {
+  const body = await readBody(request);
+  debug(`${source} webhook received: ${body}`);
+
   let payload: ArrWebhook;
   try {
-    payload = JSON.parse(await readBody(request)) as ArrWebhook;
+    payload = JSON.parse(body) as ArrWebhook;
   } catch {
     reply(response, 400, "bad json");
     return;
@@ -378,9 +403,10 @@ async function handleRedownload(
  * The seedbox is never touched; only the local staged copy.
  *
  * A season pack is a folder, and each episode imports on its own webhook. Only
- * the one imported file is deleted here (matched by its size), never the whole
- * folder while other episodes still wait. The folder goes once nothing is left
- * to import. See removeImported.
+ * the one imported file is deleted here (matched by its name, or its size for
+ * an old Radarr or Sonarr), never the whole folder while other episodes still
+ * wait. The folder goes once nothing is left to import, if the setting allows
+ * it. See removeImported.
  */
 async function handleImport(payload: ArrWebhook, store: Store, source: string): Promise<void> {
   if (!config.removeAfterImport) return;
@@ -395,7 +421,12 @@ async function handleImport(payload: ArrWebhook, store: Store, source: string): 
   }
 
   const title = payload.movie?.title ?? payload.series?.title ?? relative;
-  const result = await removeImported(relative, importedSize(payload));
+  const settings = store.settings();
+  const result = await removeImported(relative, importedFile(payload), {
+    extraExtensions: settings.cleanupExtensions,
+    removeEmptyFolders: settings.removeEmptyFolders,
+  });
+  const extraNote = result.extra.length > 0 ? ` Plus ${result.extra.length} extra file(s).` : "";
 
   switch (result.action) {
     case "tree":
@@ -404,7 +435,9 @@ async function handleImport(payload: ArrWebhook, store: Store, source: string): 
       break;
     case "file":
       if (result.removed !== null) {
-        log(`${short(hash)}: ${source} imported '${result.removed}'. It is deleted; the rest of the pack stays.`);
+        log(
+          `${short(hash)}: ${source} imported '${result.removed}'. It is deleted; the rest of the pack stays.${extraNote}`,
+        );
         await store.record({ hash, title, status: "imported", at: Date.now(), path: result.removed });
       }
       break;
@@ -415,6 +448,34 @@ async function handleImport(payload: ArrWebhook, store: Store, source: string): 
       log(`${short(hash)}: ${source} imported it, but the staged file could not be matched. It is kept.`);
       break;
   }
+}
+
+/**
+ * Delete one file (or folder) from the local disk by hand, from the Files tab
+ * of the panel. Body: {"path": "..."}, relative to the download root, the way
+ * the Files list reports it. The path cannot leave the root; see removeLocal.
+ */
+async function handleFileRemove(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): Promise<void> {
+  let body: { path?: string };
+  try {
+    body = JSON.parse(await readBody(request)) as { path?: string };
+  } catch {
+    reply(response, 400, "bad json");
+    return;
+  }
+
+  const relative = typeof body.path === "string" ? body.path : "";
+  const removed = await removeLocal(relative);
+  if (!removed) {
+    reply(response, 404, JSON.stringify({ ok: false, reason: "not found" }), "application/json");
+    return;
+  }
+
+  log(`'${relative}' was deleted by hand from the panel.`);
+  reply(response, 200, JSON.stringify({ ok: true }), "application/json");
 }
 
 /**
@@ -430,6 +491,9 @@ function settingsView(store: Store): unknown {
     chmod: s.chmod,
     fileMode: s.fileMode === null ? null : s.fileMode.toString(8),
     dirMode: s.dirMode === null ? null : s.dirMode.toString(8),
+    logLevel: s.logLevel,
+    cleanupExtensions: s.cleanupExtensions.join(", "),
+    removeEmptyFolders: s.removeEmptyFolders,
   };
 }
 
@@ -440,6 +504,9 @@ interface SettingsBody {
   chmod?: unknown;
   fileMode?: unknown;
   dirMode?: unknown;
+  logLevel?: unknown;
+  cleanupExtensions?: unknown;
+  removeEmptyFolders?: unknown;
 }
 
 /** Read a whole, non-negative number from the body, or null for empty. */
@@ -460,6 +527,30 @@ function readMode(value: unknown): number | null {
     throw new Error("a mode must be three or four octal digits, like 664");
   }
   return Number.parseInt(text, 8);
+}
+
+/** Read "info" or "debug" from the body. Anything else is an error. */
+function readLogLevel(value: unknown): "info" | "debug" {
+  const text = String(value).trim().toLowerCase();
+  if (text !== "info" && text !== "debug") {
+    throw new Error('the log level must be "info" or "debug"');
+  }
+  return text;
+}
+
+/**
+ * Read a comma- or whitespace-separated list of file extensions, like
+ * ".nfo, .txt". Each is lower-cased and given a leading dot if it lacks one.
+ * An empty body clears the list.
+ */
+function readExtensions(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  const parts = String(value)
+    .split(/[,\s]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part !== "")
+    .map((part) => (part.startsWith(".") ? part : `.${part}`));
+  return Array.from(new Set(parts));
 }
 
 /**
@@ -488,12 +579,21 @@ async function handleSettings(
     if (body.gid !== undefined) partial.gid = readId(body.gid);
     if (body.fileMode !== undefined) partial.fileMode = readMode(body.fileMode);
     if (body.dirMode !== undefined) partial.dirMode = readMode(body.dirMode);
+    if (body.logLevel !== undefined) partial.logLevel = readLogLevel(body.logLevel);
+    if (body.cleanupExtensions !== undefined) {
+      partial.cleanupExtensions = readExtensions(body.cleanupExtensions);
+    }
+    if (body.removeEmptyFolders !== undefined) {
+      partial.removeEmptyFolders = body.removeEmptyFolders === true;
+    }
   } catch (error) {
     reply(response, 400, JSON.stringify({ ok: false, reason: errorText(error) }), "application/json");
     return;
   }
 
-  store.saveSettings(partial);
+  const saved = store.saveSettings(partial);
+  // Take effect right away: no restart needed to turn debug logging on or off.
+  setLogLevel(saved.logLevel);
   log("The permission settings changed.");
   reply(response, 200, JSON.stringify({ ok: true, settings: settingsView(store) }), "application/json");
 }

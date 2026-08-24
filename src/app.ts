@@ -15,7 +15,7 @@
  */
 import { mkdir } from "node:fs/promises";
 import { config } from "./config.js";
-import { log } from "./log.js";
+import { log, setLogLevel } from "./log.js";
 import { createServer } from "./server.js";
 import { Store } from "./store.js";
 import { Worker } from "./worker.js";
@@ -25,6 +25,8 @@ export async function start(): Promise<void> {
 
   const store = new Store();
   await store.load();
+  // The settings table holds the log level; LOG_LEVEL only seeds it.
+  setLogLevel(store.settings().logLevel);
 
   const open = store.jobs().length;
   if (open > 0) log(`${open} job(s) came back from the last run.`);

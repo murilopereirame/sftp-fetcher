@@ -122,12 +122,34 @@ pass. There is no linter in this project.
   episodes one at a time and sends one "On Import" webhook each, all with the
   same infohash. So `removeImported` must NOT delete the whole staged folder on
   the first import — the episodes that still wait would be lost. It deletes only
-  the one imported file, matched by the size the webhook reports
-  (`movieFile.size` for Radarr, `episodeFile.size` for Sonarr — the import
-  copies the file byte for byte, so exactly one staged file has that size). If
-  none or two files share the size, it deletes nothing, so a wrong episode is
-  never lost. The folder itself goes only once no video file is left. A single
-  file (a movie, or a one-file torrent) is still deleted whole, as before.
+  the one imported file, matched first by the file name Radarr/Sonarr reports
+  (`movieFile.relativePath`/`.path` for Radarr, `episodeFile.relativePath`/
+  `.path` for Sonarr — a name never collides), and by the file size only as a
+  fallback for an app too old to send a path. Size alone is not reliable:
+  episodes of the same show are often encoded to the same bitrate, so two of
+  them can land on the exact same byte count, and matching by size then finds
+  neither. If neither the name nor the size matches exactly one staged file, it
+  deletes nothing, so a wrong episode is never lost. Two import webhooks for the
+  same pack can arrive within milliseconds of each other; `removeImported` runs
+  its cleanups one at a time (see the `serialized()` queue in `files.ts`), or a
+  second call could list the folder before the first one's delete lands and
+  misjudge whether a video is still left. The folder itself goes only once no
+  video file is left, and only when the `removeEmptyFolders` setting is on
+  (default on, the old fixed behaviour). The `cleanupExtensions` setting deletes
+  extra file types (an `.nfo`, a sample, a subtitle) alongside the imported file
+  on every import, not only the last one. A single file (a movie, or a
+  one-file torrent) is still deleted whole, as before.
+- **The log level lives in two places on purpose.** `LOG_LEVEL` seeds the
+  `settings` table on the first start (same pattern as `PUID`/`PGID` for
+  `chown`); after that, the panel's Settings tab is the source of truth, and it
+  takes effect immediately, no restart. `src/log.ts` cannot import `store.ts`
+  to read it live — `store.ts` already imports `log.ts` for its own log lines,
+  and a two-way import would be circular — so `log.ts` keeps the current level
+  in a module variable, and `app.ts` (on start) and `server.ts`'s
+  `handleSettings` (on a change) call `setLogLevel()` to keep it in sync.
+  `debug()` in `log.ts` is the debug-only line; `log()` always prints. The
+  webhook handler logs the raw Radarr/Sonarr body with `debug()` before it
+  parses the JSON, so a malformed body still shows up.
 - **Radarr and Sonarr share one webhook handler.** They post to two paths
   (`WEBHOOK_PATH`, default `/radarr`, and `SONARR_WEBHOOK_PATH`, default
   `/sonarr`), but send the same events (Grab, Download, Test) with the infohash
@@ -148,11 +170,12 @@ pass. There is no linter in this project.
 - **The web panel is one template literal in `src/panel.ts`.** The client script
   inside it must never use a backtick or a `${`. Both end the template literal
   at build time. Build strings with `+`, and escape a browser-side `\u` as
-  `\\u`. The panel reads the `/api/*` endpoints, and it has three writes: the
+  `\\u`. The panel reads the `/api/*` endpoints, and it has four writes: the
   **Remove** button (`POST /api/remove`), the **Redownload** button in the
-  History tab (`POST /api/redownload`), and the **Settings** tab
-  (`POST /api/settings`). The Settings tab loads once on open, never on the
-  2-second tick, or the tick would wipe out what the user is typing.
+  History tab (`POST /api/redownload`), the **Delete** button in the Files tab
+  (`POST /api/files/remove`), and the **Settings** tab (`POST /api/settings`).
+  The Settings tab loads once on open, never on the 2-second tick, or the tick
+  would wipe out what the user is typing.
 
 ## The test SFTP server
 

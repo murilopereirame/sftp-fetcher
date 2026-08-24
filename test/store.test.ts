@@ -63,6 +63,9 @@ test("the settings have sensible defaults and survive a restart", async () => {
   assert.equal(start.uid, null);
   assert.equal(start.fileMode, 0o664);
   assert.equal(start.dirMode, 0o775);
+  assert.equal(start.logLevel, "info");
+  assert.deepEqual(start.cleanupExtensions, []);
+  assert.equal(start.removeEmptyFolders, true);
 
   const saved = store.saveSettings({ chmod: true, fileMode: 0o600, uid: 1000 });
   assert.equal(saved.chmod, true);
@@ -75,6 +78,26 @@ test("the settings have sensible defaults and survive a restart", async () => {
   await second.load();
   assert.equal(second.settings().fileMode, 0o600);
   assert.equal(second.settings().uid, 1000);
+});
+
+test("the log level and the cleanup settings survive a restart", async () => {
+  const store = new Store();
+  await store.load();
+
+  const saved = store.saveSettings({
+    logLevel: "debug",
+    cleanupExtensions: [".nfo", ".txt"],
+    removeEmptyFolders: false,
+  });
+  assert.equal(saved.logLevel, "debug");
+  assert.deepEqual(saved.cleanupExtensions, [".nfo", ".txt"]);
+  assert.equal(saved.removeEmptyFolders, false);
+
+  const second = new Store();
+  await second.load();
+  assert.equal(second.settings().logLevel, "debug");
+  assert.deepEqual(second.settings().cleanupExtensions, [".nfo", ".txt"]);
+  assert.equal(second.settings().removeEmptyFolders, false);
 });
 
 test("the history keeps events and returns the newest first", async () => {

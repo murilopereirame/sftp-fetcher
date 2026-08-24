@@ -101,68 +101,143 @@ export interface ImportCleanup {
    *   "gone"  the staged copy was already gone.
    */
   action: "file" | "tree" | "kept" | "gone";
-  /** The path that was removed, relative to the root. */
+  /** The path of the imported file that was removed, relative to the root. */
   removed: string | null;
+  /** Any extra junk files removed alongside it, relative to the root. */
+  extra: string[];
+}
+
+/** What the webhook says about the file it just imported. */
+export interface ImportedFile {
+  /** movieFile.size or episodeFile.size. */
+  size?: number;
+  /**
+   * movieFile.relativePath (or .path) / episodeFile.relativePath (or .path).
+   * Matched by file name. This is the strong match: two files never share a
+   * name. Two episodes of the same show, on the other hand, often share the
+   * exact same byte count (the same codec and bitrate target), so size alone
+   * can fail to tell them apart. Name is tried first; size is the fallback
+   * for an old Radarr or Sonarr that sends no path.
+   */
+  name?: string;
+}
+
+/** Preferences for the cleanup that runs after an import. See Settings. */
+export interface CleanupOptions {
+  /** Extra extensions (with the dot, e.g. ".nfo") removed with the import. */
+  extraExtensions: string[];
+  /** Delete the folder once nothing but the cleaned-up junk is left in it. */
+  removeEmptyFolders: boolean;
+}
+
+/**
+ * Two import webhooks for the same season pack can arrive within milliseconds
+ * of each other. Without this, both could list the folder before either one
+ * deletes anything, and each would then judge "is a video still left" from a
+ * stale, shared snapshot. Cleanups run one at a time, so every call sees the
+ * result of the one before it.
+ */
+let cleanupChain: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const run = cleanupChain.then(task, task);
+  cleanupChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 /**
  * Clean up after an import. `relative` is the staged path this program made.
  *
  * A single file is deleted, the way this program always did. A folder is a
- * season pack: Radarr and Sonarr import one file at a time and send one webhook
- * each, so the whole folder must NOT go on the first import, or the episodes
- * that still wait are lost. Only the one imported file is deleted here. The
- * `size` is the link: the import copies the file byte for byte, so exactly one
- * staged file has that size. If none or two share it, nothing is deleted, so a
- * wrong episode is never lost. The folder itself goes only once no video file
- * is left, which takes the samples and the subtitles with it.
+ * season pack: Radarr and Sonarr import one file at a time and send one
+ * webhook each, so the whole folder must NOT go on the first import, or the
+ * episodes that still wait are lost. Only the one imported file is deleted
+ * here, matched by name first (it cannot collide) and by size as a fallback
+ * for an old Radarr or Sonarr that sends no path. If neither matches exactly
+ * one staged file, nothing is deleted, so a wrong episode is never lost.
  *
- * (An old Radarr or Sonarr sends no size. Then a pack file cannot be matched,
- * so the folder is kept until every video is gone. The disk is not freed, but
- * nothing is lost.)
+ * `extraExtensions` removes junk (an .nfo, a sample, a subtitle) alongside
+ * the imported file, on every import, not only the last one. The folder
+ * itself goes once no video file is left in it, and only when
+ * `removeEmptyFolders` is on; the samples and the subtitles go with it.
  */
-export async function removeImported(
+export function removeImported(
   relative: string,
-  size: number | undefined,
+  imported: ImportedFile,
+  options: CleanupOptions,
+): Promise<ImportCleanup> {
+  return serialized(() => removeImportedNow(relative, imported, options));
+}
+
+async function removeImportedNow(
+  relative: string,
+  imported: ImportedFile,
+  options: CleanupOptions,
 ): Promise<ImportCleanup> {
   const full = safeFull(relative);
-  if (full === null) return { action: "kept", removed: null };
+  if (full === null) return { action: "kept", removed: null, extra: [] };
 
   let info;
   try {
     info = await stat(full);
   } catch {
-    return { action: "gone", removed: null };
+    return { action: "gone", removed: null, extra: [] };
   }
 
   if (info.isFile()) {
     await rm(full, { force: true });
-    return { action: "file", removed: relative };
+    return { action: "file", removed: relative, extra: [] };
   }
-  if (!info.isDirectory()) return { action: "kept", removed: null };
+  if (!info.isDirectory()) return { action: "kept", removed: null, extra: [] };
 
   const files: { full: string; bytes: number }[] = [];
   await walkSizes(full, files);
 
-  let removedFull: string | null = null;
-  if (size !== undefined && size > 0) {
-    const matches = files.filter((f) => f.bytes === size);
+  let matchedFull: string | null = null;
+  if (imported.name !== undefined && imported.name !== "") {
+    const wanted = path.basename(imported.name).toLowerCase();
+    const matches = files.filter((f) => path.basename(f.full).toLowerCase() === wanted);
     const first = matches[0];
-    if (matches.length === 1 && first !== undefined) {
-      await rm(first.full, { force: true });
-      removedFull = first.full;
-    }
+    if (matches.length === 1 && first !== undefined) matchedFull = first.full;
+  }
+  if (matchedFull === null && imported.size !== undefined && imported.size > 0) {
+    const matches = files.filter((f) => f.bytes === imported.size);
+    const first = matches[0];
+    if (matches.length === 1 && first !== undefined) matchedFull = first.full;
+  }
+  if (matchedFull !== null) await rm(matchedFull, { force: true });
+
+  // Extra junk, by extension. Runs every time, so a pack is tidy as it goes.
+  const extraFull: string[] = [];
+  for (const f of files) {
+    if (f.full === matchedFull) continue;
+    if (!options.extraExtensions.includes(path.extname(f.full).toLowerCase())) continue;
+    await rm(f.full, { force: true });
+    extraFull.push(f.full);
   }
 
-  // Nothing left to import? Then the whole folder can go.
-  const videoLeft = files.some((f) => f.full !== removedFull && isVideo(f.full));
-  if (!videoLeft) {
+  if (matchedFull === null && extraFull.length === 0) {
+    return { action: "kept", removed: null, extra: [] };
+  }
+
+  // Nothing left to import? Then the whole folder can go, if allowed to.
+  const removedSet = new Set([matchedFull, ...extraFull]);
+  const videoLeft = files.some((f) => !removedSet.has(f.full) && isVideo(f.full));
+  if (!videoLeft && options.removeEmptyFolders) {
     await rm(full, { recursive: true, force: true });
-    return { action: "tree", removed: relative };
+    return { action: "tree", removed: relative, extra: [] };
   }
 
-  if (removedFull === null) return { action: "kept", removed: null };
-  return { action: "file", removed: path.relative(config.localRoot, removedFull) };
+  const extra = extraFull.map((f) => path.relative(config.localRoot, f));
+  if (matchedFull === null) {
+    // Only junk matched. Report it as the removal, so the caller has something
+    // to log; there is no imported file to point at.
+    return { action: "file", removed: extra[0] ?? null, extra: extra.slice(1) };
+  }
+  return { action: "file", removed: path.relative(config.localRoot, matchedFull), extra };
 }
 
 /** All files under the download root, newest first. */
