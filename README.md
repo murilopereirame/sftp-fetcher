@@ -192,6 +192,11 @@ the film. If not, Radarr copies it a second time.
 | `COPY_TRIES` | `3` | Attempts for one download. |
 | `COPY_WAIT` | `60` | Seconds between two attempts. |
 | `PROGRESS_INTERVAL` | `15` | Seconds between two progress lines. |
+| `RADARR_URL` | — | Radarr's own address, e.g. `http://radarr:7878`. Optional; see [Flagging an untracked download](#flagging-an-untracked-download). |
+| `RADARR_API_KEY` | — | Radarr's API key. **Settings > General > Security**. |
+| `SONARR_URL` | — | Sonarr's own address, e.g. `http://sonarr:8989`. Optional, same as above. |
+| `SONARR_API_KEY` | — | Sonarr's API key. **Settings > General > Security**. |
+| `ARR_CHECK_INTERVAL` | `300` | Seconds between two checks of the Radarr/Sonarr queue. Only used when at least one of the above is set. |
 
 ### The qBittorrent authentication
 
@@ -264,6 +269,33 @@ The **Settings** tab of the panel has two more switches for this cleanup:
 be matched, so the folder is kept until it is empty of videos. Nothing is ever
 deleted by mistake.)
 
+### Flagging an untracked download
+
+Radarr has no "torrent is done" event, only "On Grab", so this service waits
+for qBittorrent and never talks to Radarr again for that torrent — until the
+import. That leaves one gap: if the download is removed from Radarr's or
+Sonarr's own queue after the grab (someone clears it by hand in the app, an
+indexer's release gets replaced and the old one is cancelled, or something
+imports it outside this service), this service has no way to know and keeps
+waiting for it, silently, for up to `MAX_WAIT_HOURS`.
+
+Set `RADARR_URL`/`RADARR_API_KEY` and/or `SONARR_URL`/`SONARR_API_KEY` to
+close that gap. With at least one set, the worker periodically (every
+`ARR_CHECK_INTERVAL` seconds, `300` by default) asks that app's own queue
+(`GET /api/v3/queue`, not the webhook) whether it still lists the torrent. A
+job that is not there any more is **flagged**: it shows an **Untracked** tag
+next to it in the Activity tab's Queue table, and one log line is written.
+Nothing is deleted or removed automatically — a flag only tells you to take a
+look, and it clears itself if the torrent reappears in the *arr queue on a
+later check. Two safeguards keep this from ever flagging something by
+mistake: a job younger than two minutes is never checked (Radarr may not have
+finished adding it to its own queue view yet), and a check that fails outright
+(the app is unreachable, or answers with an error) is treated as "unknown",
+never as "not there".
+
+This is entirely optional. With neither Radarr nor Sonarr configured here,
+nothing changes.
+
 ## The transfer mode
 
 `TRANSFER_MODE` chooses how the file data is copied. qBittorrent is still the
@@ -317,7 +349,9 @@ a dark theme, chosen from the browser's preference by default, with a toggle
 
 Each row in the queue has a **Remove** button. Use it when a torrent goes stale
 and needs a hand: it drops the job and its part files. The seedbox is not
-touched.
+touched. A row can also carry an **Untracked** tag — see
+[Flagging an untracked download](#flagging-an-untracked-download) — which is
+exactly the kind of stale entry the Remove button is for.
 
 Each finished row in the History tab has a **Redownload** button. Use it when a
 local copy was deleted (or came out broken) and the app needs it again: it
@@ -434,8 +468,15 @@ The same command adds a torrent that Radarr grabbed before the webhook existed.
 ### The tests
 
 `npm test` compiles the sources with the tests and runs the Node test runner.
-The suite covers the path map, the progress numbers, the queue on disk, and the
-webhook, with no network and no seedbox.
+The suite covers the path map, the progress numbers, the queue on disk, the
+webhook, the season-pack import cleanup, and the Radarr/Sonarr queue check
+(against a small fake HTTP server, in `test/arr.test.ts`), with no network
+and no seedbox.
+
+The **Tests** workflow (`.github/workflows/test.yml`) runs `npm run typecheck`
+and `npm test` on every push and every pull request, so a change gets fast
+feedback with no Docker build. See [The image](#the-image) for the separate
+workflow that builds and publishes the image.
 
 ## The files
 
@@ -446,6 +487,7 @@ webhook, with no network and no seedbox.
 | `src/server.ts` | The webhook and the status endpoint. |
 | `src/worker.ts` | The loop: poll, download, move. |
 | `src/qbittorrent.ts` | The Web API client. |
+| `src/arr.ts` | The Radarr/Sonarr API client, for the *arr-queue check. |
 | `src/fetcher.ts` | Picks the transport (SFTP or p2f) from the mode. |
 | `src/sftp.ts` | The SFTP download, with progress. |
 | `src/p2f.ts` | The peer-to-file download (via p2f-lib). |
@@ -460,9 +502,11 @@ webhook, with no network and no seedbox.
 
 ## The image
 
-A GitHub release makes a new image. The workflow also starts by hand from the
-Actions tab. The image goes to the GitHub Container Registry, for `amd64` and
-`arm64`.
+A GitHub release makes a new image. The workflow (`.github/workflows/docker.yml`)
+also starts by hand from the Actions tab. It runs the tests first, then builds
+and pushes. The image goes to the GitHub Container Registry, for `amd64` and
+`arm64`. No image is built from a plain branch or pull request; that is what
+the separate Tests workflow above is for.
 
 ```bash
 docker pull ghcr.io/<owner>/<repository>:latest

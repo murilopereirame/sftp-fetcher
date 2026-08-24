@@ -44,6 +44,8 @@ test("a grab event puts the torrent in the queue", async () => {
   const job = store.jobs().find((item) => item.hash === hash.toLowerCase());
   assert.ok(job, "the job is in the queue");
   assert.equal(job.title, "Film.2024.1080p");
+  // The source is recorded, so the *arr-queue check knows which app to ask.
+  assert.equal(job.source, "Radarr");
 });
 
 test("the same grab twice makes one job only", async () => {
@@ -233,9 +235,30 @@ test("the status endpoint shows the queue", async () => {
   const response = await fetch(`${base}/status`);
   assert.equal(response.status, 200);
 
-  const body = (await response.json()) as { queue: unknown[]; download: unknown };
+  const body = (await response.json()) as {
+    queue: { hash: string; flagged: boolean }[];
+    download: unknown;
+  };
   assert.ok(Array.isArray(body.queue));
   assert.equal(body.download, null);
+  // Every queue row reports whether the *arr-queue check flagged it.
+  assert.ok(body.queue.every((j) => typeof j.flagged === "boolean"));
+});
+
+test("a flagged job is reported by both status endpoints", async () => {
+  const hash = "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00";
+  await post("/radarr", { eventType: "Grab", downloadId: hash, release: { releaseTitle: "Flagged.Film" } });
+  await store.setFlag(hash, Date.now());
+
+  const status = (await (await fetch(`${base}/status`)).json()) as {
+    queue: { hash: string; flagged: boolean }[];
+  };
+  assert.equal(status.queue.find((j) => j.hash === hash)?.flagged, true);
+
+  const apiStatus = (await (await fetch(`${base}/api/status`)).json()) as {
+    queue: { hash: string; flagged: boolean }[];
+  };
+  assert.equal(apiStatus.queue.find((j) => j.hash === hash)?.flagged, true);
 });
 
 test("the root path serves the web panel", async () => {

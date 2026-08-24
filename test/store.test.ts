@@ -53,6 +53,35 @@ test("markDone keeps the local path for a later import cleanup", async () => {
   assert.equal(store.donePath("nope"), null);
 });
 
+test("a job remembers its source, and defaults to empty when none is given", async () => {
+  const store = new Store();
+  await store.load();
+
+  await store.add({ hash: "gggg", title: "Film G", addedAt: Date.now(), source: "Sonarr" });
+  await store.add({ hash: "hhhh", title: "Film H", addedAt: Date.now() });
+
+  assert.equal(store.jobs().find((j) => j.hash === "gggg")?.source, "Sonarr");
+  assert.equal(store.jobs().find((j) => j.hash === "hhhh")?.source, "");
+});
+
+test("a fresh job starts unflagged; setFlag sets and clears it, and it survives a restart", async () => {
+  const store = new Store();
+  await store.load();
+
+  await store.add({ hash: "jjjj", title: "Film J", addedAt: Date.now(), source: "Radarr" });
+  assert.equal(store.jobs().find((j) => j.hash === "jjjj")?.flaggedAt, null);
+
+  await store.setFlag("jjjj", 12345);
+  assert.equal(store.jobs().find((j) => j.hash === "jjjj")?.flaggedAt, 12345);
+
+  const second = new Store();
+  await second.load();
+  assert.equal(second.jobs().find((j) => j.hash === "jjjj")?.flaggedAt, 12345);
+
+  await store.setFlag("jjjj", null);
+  assert.equal(store.jobs().find((j) => j.hash === "jjjj")?.flaggedAt, null);
+});
+
 test("the settings have sensible defaults and survive a restart", async () => {
   const store = new Store();
   await store.load();

@@ -563,7 +563,10 @@ export const panelHtml = `<!doctype html>
       return;
     }
     var rows = s.queue.map(function (j) {
-      return '<tr><td>' + esc(j.title) + '</td>' +
+      var flag = j.flagged
+        ? ' <span class="tag failed" title="Not in the Radarr/Sonarr queue that grabbed it. It may have been removed by hand, or imported outside this service.">Untracked</span>'
+        : '';
+      return '<tr><td>' + esc(j.title) + flag + '</td>' +
         '<td class="num">' + esc(j.hash.slice(0, 8)) + '</td>' +
         '<td class="num">' + rel(Date.parse(j.waitingSince)) + '</td>' +
         '<td class="num"><button class="rm" data-hash="' + esc(j.hash) + '">Remove</button></td></tr>';

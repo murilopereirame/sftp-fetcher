@@ -113,6 +113,10 @@ function status(store: Store): unknown {
       hash: job.hash,
       title: job.title,
       waitingSince: new Date(job.addedAt).toISOString(),
+      // True when the periodic check could not find this torrent in the
+      // *arr queue that grabbed it. See Worker.checkArrQueues. Informational
+      // only: nothing about the job changes because of this flag.
+      flagged: job.flaggedAt !== null,
     })),
     download:
       progress === null
@@ -145,6 +149,7 @@ function apiStatus(store: Store): unknown {
       hash: job.hash,
       title: job.title,
       waitingSince: new Date(job.addedAt).toISOString(),
+      flagged: job.flaggedAt !== null,
     })),
     download:
       progress === null
@@ -317,7 +322,9 @@ async function handleWebhook(
     log(`${short(hash)}: This torrent is in the queue or done already.`);
   } else {
     const now = Date.now();
-    await store.add({ hash, title, addedAt: now });
+    // The source ("Radarr" or "Sonarr") says which app's queue to check the
+    // job against later. See Worker.checkArrQueues.
+    await store.add({ hash, title, addedAt: now, source });
     await store.record({ hash, title, status: "grabbed", at: now });
     log(`${short(hash)}: Added to the queue. Title: '${title}'.`);
   }
@@ -388,7 +395,9 @@ async function handleRedownload(
   if (relative !== null) await removeLocal(relative);
   await removeIncomplete(hash);
 
-  // Forget that it finished, then put it back in the queue.
+  // Forget that it finished, then put it back in the queue. The source is
+  // not known here, so the *arr-queue check (see Worker.checkArrQueues)
+  // skips this job; it applies again once a real Grab webhook re-adds it.
   await store.forget(hash);
   const now = Date.now();
   await store.add({ hash, title, addedAt: now });

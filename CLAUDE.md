@@ -25,6 +25,7 @@ src/app.ts          starts the HTTP server and the worker
 src/server.ts       POST /radarr, POST /sonarr, GET /, GET /status, GET /api/*, GET /health
 src/worker.ts       the loop: poll, download, move
 src/qbittorrent.ts  the Web API client (apikey | password | none)
+src/arr.ts          the Radarr/Sonarr API client, for the *arr-queue check
 src/fetcher.ts      picks the transport (sftp | p2f) from the mode
 src/sftp.ts         the SFTP download, with byte progress
 src/p2f.ts          the peer-to-file download (thin wrapper over p2f-lib)
@@ -105,6 +106,28 @@ pass. There is no linter in this project.
   Import" also arrives, as `eventType: "Download"`, but only *after* Radarr
   imports — too late to start anything. It is used only to clean up the local
   copy, see the next trap.)
+- **The *arr-queue check only ever flags; it never deletes or removes.**
+  `src/arr.ts`'s `ArrClient` pulls Radarr's/Sonarr's own `GET /api/v3/queue` —
+  the opposite direction from the webhook — so `Worker.checkArrQueues` can
+  notice when *arr forgot about a torrent this service is still waiting on
+  (removed by hand in the app, or imported outside this service) instead of
+  waiting out the full `MAX_WAIT_HOURS` in silence. `queueHashes()` returns
+  `null` on anything short of a confirmed, parsed 200 (not configured,
+  unreachable, a non-200 status, bad JSON): `checkArrQueues` must never flag a
+  job on a `null` result, only on a real "this hash is not in the list"
+  answer, or a network hiccup would flag every job in the queue at once. A job
+  needs its `source` (`"Radarr"` or `"Sonarr"`, set from the webhook that
+  queued it — see `store.add`) to know which app's queue to compare it
+  against; a job with no source (queued through the panel's Redownload button,
+  which does not know it) is skipped, never checked against the wrong app or
+  against both. A job younger than two minutes is also skipped, since *arr may
+  not have added it to its own queue view yet. The check itself is throttled
+  to once per `ARR_CHECK_INTERVAL` regardless of how often the worker's pass
+  loop runs (`POLL_INTERVAL` is usually far shorter). `Worker`'s constructor
+  takes the two clients as `ArrQueueSource` (an interface), not the concrete
+  `ArrClient` class — TypeScript compares classes with private fields
+  nominally, so a parameter typed as the class itself would refuse a test's
+  fake client even with an identical public shape.
 - **The JSON-to-SQLite migration runs once.** On the first start after the
   upgrade, `store.migrateFromJson` reads the old `queue.json`, `done.json`, and
   `history.json` into the tables, then renames each to `*.imported`. A
@@ -182,6 +205,12 @@ pass. There is no linter in this project.
 `sftp-test-server.mjs` gives a real SFTP server on port 2222, for the user
 `torrent` and the password `secret`. It serves `/tmp/seedbox`. Use it for an
 end-to-end test with no seedbox. The README shows the commands.
+
+## Continuous integration
+
+`.github/workflows/test.yml` runs `npm run typecheck` and `npm test` on every
+push and every pull request. It builds and pushes nothing; it exists purely so
+a change gets fast feedback without waiting on a release.
 
 ## The image
 
